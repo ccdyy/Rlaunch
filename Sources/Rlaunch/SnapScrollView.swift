@@ -31,9 +31,31 @@ final class SnapScrollView: NSScrollView {
         // 打断进行中的吸附动画
         contentView.layer?.removeAllAnimations()
         super.scrollWheel(with: event)
-        // 鼠标滚轮无 phase 事件：统一用短延迟定时器吸附
+
+        if event.momentumPhase.contains(.ended) {
+            // 触控板惯性滚动结束：立即吸附
+            snapTimer?.invalidate()
+            snap()
+            return
+        }
+        if !event.momentumPhase.isEmpty {
+            // 惯性进行中：等惯性结束再吸附
+            snapTimer?.invalidate()
+            return
+        }
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            // 手指抬起：极短延迟确认无惯性后吸附（若有惯性，momentum 事件会接管并取消定时器）
+            scheduleSnap(delay: 0.03)
+            return
+        }
+        // 触控板手指拖动中不吸附；鼠标滚轮无 phase 事件，用短定时器兜底
+        guard event.phase.isEmpty else { return }
+        scheduleSnap(delay: 0.08)
+    }
+
+    private func scheduleSnap(delay: TimeInterval) {
         snapTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.22, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             self?.snap()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -59,7 +81,7 @@ final class SnapScrollView: NSScrollView {
         guard abs(currentX - targetX) > 0.5 else { return }
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.28
+                ctx.duration = 0.15
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 contentView.animator().setBoundsOrigin(NSPoint(x: targetX, y: 0))
             } completionHandler: { [weak self] in
