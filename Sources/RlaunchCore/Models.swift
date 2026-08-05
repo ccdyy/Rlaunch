@@ -1,0 +1,172 @@
+import Foundation
+
+// MARK: - 应用条目（扫描结果）
+
+public struct AppInfo: Equatable, Hashable {
+    public let name: String
+    public let path: String
+    public let bundleID: String
+
+    public init(name: String, path: String, bundleID: String) {
+        self.name = name
+        self.path = path
+        self.bundleID = bundleID
+    }
+}
+
+// MARK: - 文件夹（目录）配置
+
+public struct FolderConfig: Codable, Equatable {
+    public var id: String
+    public var name: String
+    public var appPaths: [String]
+
+    public init(id: String, name: String, appPaths: [String]) {
+        self.id = id
+        self.name = name
+        self.appPaths = appPaths
+    }
+}
+
+// MARK: - 主题
+
+public enum Theme: String, Codable, CaseIterable {
+    case light = "light"
+    case dark = "dark"
+    case system = "system"
+
+    public var displayName: String {
+        switch self {
+        case .light: return "明亮"
+        case .dark: return "深黑"
+        case .system: return "跟随系统"
+        }
+    }
+}
+
+// MARK: - 应用配置
+
+public struct AppConfig: Codable, Equatable {
+    // 扫描
+    public var scanPaths: [String]
+    public var recursionDepth: Int = 3    // 外观
+    public var theme: Theme = .dark
+    public var backgroundImagePath: String?
+    public var bgOpacity: Double = 0.85          // 0.15 ~ 1.0
+    public var bgBlur: Double = 0                // 0 ~ 60
+    // 网格
+    public var columns: Int = 7
+    public var rows: Int = 5
+    public var spacing: Double = 24          // 兼容旧配置，新代码使用 columnSpacing/rowSpacing
+    public var columnSpacing: Double = 24
+    public var rowSpacing: Double = 24
+    public var fullscreenSpacingScale: Double = 1.6  // 全屏时列/行间距放大倍数
+    public var iconSize: Double = 64
+    // 手势
+    public var gestureEnabled: Bool = true
+    public var gestureThreshold: Double = 0.7    // 捏合幅度阈值（灵敏度）
+    // 文件夹
+    public var folders: [FolderConfig] = []
+    // 窗口
+    public var windowWidth: Double = 1020
+    public var windowHeight: Double = 700
+    // 行为
+    public var hideOnLaunch: Bool = true         // 启动应用后收起界面
+
+    /// macOS 26 系统应用位于 /System/Applications（Launchpad 也会展示它们）。
+    /// 用户目录用 ~ 形式存储（不暴露用户名，便于开源分享配置）。
+    public static let defaultScanPaths = [
+        "/Applications",
+        "/System/Applications",
+        "~/Applications",
+    ]
+
+    public static let defaults = AppConfig(scanPaths: defaultScanPaths)
+
+    public init(scanPaths: [String] = AppConfig.defaultScanPaths) {
+        self.scanPaths = scanPaths
+    }
+
+    /// 容错解码：旧版配置缺失新字段时用默认值，避免升级后配置被静默重置
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        scanPaths = try c.decodeIfPresent([String].self, forKey: .scanPaths) ?? AppConfig.defaultScanPaths
+        recursionDepth = try c.decodeIfPresent(Int.self, forKey: .recursionDepth) ?? 3
+        theme = try c.decodeIfPresent(Theme.self, forKey: .theme) ?? .dark
+        backgroundImagePath = try c.decodeIfPresent(String.self, forKey: .backgroundImagePath)
+        bgOpacity = try c.decodeIfPresent(Double.self, forKey: .bgOpacity) ?? 0.85
+        bgBlur = try c.decodeIfPresent(Double.self, forKey: .bgBlur) ?? 0
+        columns = try c.decodeIfPresent(Int.self, forKey: .columns) ?? 7
+        rows = try c.decodeIfPresent(Int.self, forKey: .rows) ?? 5
+        spacing = try c.decodeIfPresent(Double.self, forKey: .spacing) ?? 24
+        columnSpacing = try c.decodeIfPresent(Double.self, forKey: .columnSpacing) ?? 24
+        rowSpacing = try c.decodeIfPresent(Double.self, forKey: .rowSpacing) ?? 24
+        fullscreenSpacingScale = try c.decodeIfPresent(Double.self, forKey: .fullscreenSpacingScale) ?? 1.6
+        iconSize = try c.decodeIfPresent(Double.self, forKey: .iconSize) ?? 64
+        gestureEnabled = try c.decodeIfPresent(Bool.self, forKey: .gestureEnabled) ?? true
+        gestureThreshold = try c.decodeIfPresent(Double.self, forKey: .gestureThreshold) ?? 0.7
+        folders = try c.decodeIfPresent([FolderConfig].self, forKey: .folders) ?? []
+        windowWidth = try c.decodeIfPresent(Double.self, forKey: .windowWidth) ?? 1020
+        windowHeight = try c.decodeIfPresent(Double.self, forKey: .windowHeight) ?? 700
+        hideOnLaunch = try c.decodeIfPresent(Bool.self, forKey: .hideOnLaunch) ?? true
+    }
+
+    public func appPathsInAllFolders() -> Set<String> {
+        var set = Set<String>()
+        for f in folders { set.formUnion(f.appPaths) }
+        return set
+    }
+
+    public func folder(containing path: String) -> FolderConfig? {
+        folders.first { $0.appPaths.contains(path) }
+    }
+}
+
+// MARK: - 配置存取
+
+public enum ConfigStore {
+    public static let didChange = Notification.Name("RlaunchConfigDidChange")
+
+    /// 测试注入用：覆盖默认配置路径
+    public static var configURLOverride: URL?
+
+    private static var configURL: URL {
+        if let override = configURLOverride { return override }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = base.appendingPathComponent("Rlaunch", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("config.json")
+    }
+
+    /// 旧版默认扫描路径（展开形式，无 /System/Applications），用于识别需要迁移的存量配置
+    private static let legacyDefaultScanPaths = [
+        "/Applications",
+        NSString(string: "~/Applications").expandingTildeInPath,
+    ]
+
+    public static func load() -> AppConfig {
+        guard let data = try? Data(contentsOf: configURL),
+              var cfg = try? JSONDecoder().decode(AppConfig.self, from: data) else {
+            return AppConfig.defaults
+        }
+        // 迁移：恰好等于旧默认的配置补上 /System/Applications；用户自定义目录保持不变
+        if cfg.scanPaths == legacyDefaultScanPaths {
+            cfg.scanPaths = AppConfig.defaultScanPaths
+        }
+        return cfg
+    }
+
+    @discardableResult
+    public static func save(_ config: AppConfig) -> Bool {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(config) else { return false }
+        do {
+            try data.write(to: configURL, options: .atomic)
+            return true
+        } catch {
+            NSLog("Rlaunch: 保存配置失败 %@", error.localizedDescription)
+            return false
+        }
+    }
+}
