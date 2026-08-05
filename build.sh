@@ -7,6 +7,9 @@ CONFIG="${1:-release}"
 # --disable-sandbox: 本机 SPM 沙箱在当前 shell 环境不可用
 swift build -c "$CONFIG" --product Rlaunch --disable-sandbox
 
+# 生成并打包应用图标（门意象）
+python3 Resources/generate_icon.py
+
 APP="Rlaunch.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -17,6 +20,8 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 cp "$BIN" "$APP/Contents/MacOS/Rlaunch"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp Resources/MenuBarIcon.png Resources/MenuBarIcon@2x.png "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -31,6 +36,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 	<string>Rlaunch</string>
 	<key>CFBundleDisplayName</key>
 	<string>Rlaunch</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

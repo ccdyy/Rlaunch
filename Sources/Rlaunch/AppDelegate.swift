@@ -7,6 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var gesture: GestureMonitor!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let icon = AppIcon.application {
+            NSApp.applicationIconImage = icon
+        }
+
         let config = ConfigStore.load()
         ThemeManager.current = config.theme
 

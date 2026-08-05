@@ -7,9 +7,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     func setup(onToggle: @escaping () -> Void,
                onSettings: @escaping () -> Void,
                onQuit: @escaping () -> Void) {
-        let image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "Rlaunch")
-        image?.isTemplate = true
-        statusItem.button?.image = image
+        if let image = AppIcon.menuBar {
+            statusItem.button?.image = image
+        }
+        statusItem.button?.toolTip = "Rlaunch"
 
         let menu = NSMenu()
         let toggleItem = NSMenuItem(title: "显示 / 隐藏 Rlaunch", action: #selector(toggleAction), keyEquivalent: "")

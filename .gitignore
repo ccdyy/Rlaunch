@@ -1,5 +1,6 @@
 .build/
 Rlaunch.app/
+Resources/AppIcon.iconset/
 .DS_Store
 *.xcuserstate
 .vscode/
