@@ -3,6 +3,7 @@ import Cocoa
 /// 横向分页滚动视图：滚动停止后自动吸附到最近的整页（page snapping）。
 final class SnapScrollView: NSScrollView {
     var onPageChanged: ((Int) -> Void)?
+    var onEscape: (() -> Void)?
 
     private(set) var pageCount = 1
     private(set) var currentPage = 0
@@ -115,6 +116,7 @@ final class SnapScrollView: NSScrollView {
         case 121: scrollToPage(currentPage + 1, animated: true) // PageDown
         case 115: scrollToPage(0, animated: true)               // Home
         case 119: scrollToPage(pageCount - 1, animated: true)   // End
+        case 53: onEscape?()                                    // Esc
         default: super.keyDown(with: event)
         }
     }

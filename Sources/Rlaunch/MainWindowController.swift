@@ -15,6 +15,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var searchQuery = ""
     private var pages: [GridPageView] = []
     private var lastLayoutSize: NSSize = .zero
+    /// 伪全屏状态：不用系统全屏（其过渡动画会把窗口内容变形拉伸、且与自定义布局冲突），
+    /// 自实现「淡出 → 瞬间切尺寸并完成布局 → 淡入」，全程无变形、无重影。
+    private(set) var isPseudoFullScreen = false
+    private var frameBeforeFullScreen: NSRect = .zero
+    private var isScreenTransitioning = false
 
     private let background = BackgroundView()
     private let topBar = TopBarView()
@@ -32,7 +37,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let c = controller else { return }
             let b = bounds
             // 全屏时顶部留出安全区（刘海屏菜单栏区域），按系统安全区动态取值
-            let isFullscreen = c.window?.styleMask.contains(.fullScreen) == true
+            let isFullscreen = c.isPseudoFullScreen
             let topInset: CGFloat = isFullscreen ? (c.window?.screen?.safeAreaInsets.top ?? 18) : 0
             c.background.frame = b
             c.topBar.frame = NSRect(x: 0, y: b.height - 56 - topInset, width: b.width, height: 56)
@@ -57,7 +62,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.hasShadow = true
         window.isMovableByWindowBackground = true
         window.minSize = NSSize(width: 620, height: 440)
-        window.collectionBehavior = [.fullScreenPrimary]
+        window.collectionBehavior = [] // 不启用系统全屏，全屏由伪全屏自实现
         window.titleVisibility = .hidden
         window.level = .floating
         window.isReleasedWhenClosed = false
@@ -83,6 +88,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.topBar.setPage(page, of: self.scrollView.pageCount)
         }
+        scrollView.onEscape = { [weak self] in
+            guard let self, self.isPseudoFullScreen else { return }
+            self.togglePseudoFullScreen()
+        }
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(configDidChange), name: ConfigStore.didChange, object: nil)
@@ -97,7 +106,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func wireTopBar() {
         topBar.onRed = { [weak self] in self?.hide() }
         topBar.onYellow = { [weak self] in self?.window?.miniaturize(nil) }
-        topBar.onGreen = { [weak self] in self?.window?.toggleFullScreen(nil) }
+        topBar.onGreen = { [weak self] in self?.togglePseudoFullScreen() }
         topBar.onSearchChanged = { [weak self] q in self?.applySearch(q) }
         topBar.onPrevPage = { [weak self] in
             guard let self else { return }
@@ -154,7 +163,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func gridConfig() -> GridLayoutConfig {
         // 全屏时按配置放大列/行间距，避免大屏上显得紧凑
-        let isFullscreen = window?.styleMask.contains(.fullScreen) == true
+        let isFullscreen = isPseudoFullScreen
         let scale = isFullscreen ? CGFloat(config.fullscreenSpacingScale) : 1.0
         return GridLayoutConfig(
             columns: config.columns,
@@ -195,6 +204,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         scrollView.scrollToPage(0, animated: false)
         topBar.setPage(0, of: pageCount)
         topBar.setFolderMode(name: currentFolder?.name)
+    }
+
+    /// 仅刷新网格布局参数（全屏切换仅间距变化，列行数与页数不变），避免 reloadData 重建页面的卡顿
+    private func applyGridConfig() {
+        let cfg = gridConfig()
+        for page in pages { page.layoutConfig = cfg }
+        lastLayoutSize = .zero
+        didLayoutRoot()
     }
 
     private func layoutPages() {
@@ -400,6 +417,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             settingsController = controller
         }
         settingsController?.show(relativeTo: window)
+        // 伪全屏时主窗口层级高于菜单栏，设置窗口需同步抬高否则被盖住
+        if isPseudoFullScreen, let mw = window {
+            settingsController?.window?.level = mw.level
+        }
     }
 
     // MARK: - 显示 / 隐藏
@@ -436,22 +457,53 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - NSWindowDelegate
 
-    func windowDidEnterFullScreen(_ notification: Notification) {
-        topBar.setFullscreen(true)
-        topBar.traffic.isHidden = true // 全屏时隐藏三色按钮
-        window?.contentView?.layer?.cornerRadius = 0
-        reloadData() // 应用全屏间距
-    }
-
-    func windowDidExitFullScreen(_ notification: Notification) {
-        topBar.setFullscreen(false)
-        topBar.traffic.isHidden = false
-        window?.contentView?.layer?.cornerRadius = 18
-        reloadData() // 恢复普通间距
+    /// 伪全屏切换：淡出 → 瞬间切到目标尺寸并完成全部布局 → 淡入。
+    /// 全程无窗口尺寸动画，因此不存在内容变形/拉伸/重影的可能。
+    func togglePseudoFullScreen() {
+        guard let window, !isScreenTransitioning else { return }
+        isScreenTransitioning = true
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.1
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            window.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            guard let self, let window = self.window else { return }
+            if self.isPseudoFullScreen {
+                window.level = .floating
+                window.setFrame(self.frameBeforeFullScreen, display: false)
+                self.isPseudoFullScreen = false
+                window.isMovableByWindowBackground = true
+                window.contentView?.layer?.cornerRadius = 18
+                self.topBar.traffic.isHidden = false
+                self.topBar.setFullscreen(false)
+            } else {
+                self.frameBeforeFullScreen = window.frame
+                // 抬高窗口层级以盖住菜单栏，达到真全屏的视觉效果
+                window.level = NSWindow.Level(
+                    rawValue: NSWindow.Level.RawValue(CGWindowLevelForKey(.mainMenuWindow)) + 1)
+                if let screen = window.screen ?? NSScreen.main {
+                    window.setFrame(screen.frame, display: false)
+                }
+                self.isPseudoFullScreen = true
+                window.isMovableByWindowBackground = false // 防止全屏时被拖走
+                window.contentView?.layer?.cornerRadius = 0
+                self.topBar.traffic.isHidden = true
+                self.topBar.setFullscreen(true)
+            }
+            window.contentView?.layoutSubtreeIfNeeded() // 先按新尺寸完成根布局（含安全区）
+            self.applyGridConfig()                      // 再刷新全屏/普通间距并重排页面
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.16
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().alphaValue = 1
+            } completionHandler: { [weak self] in
+                self?.isScreenTransitioning = false
+            }
+        }
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        guard let w = window, !w.styleMask.contains(.fullScreen) else { return }
+        guard let w = window, !isPseudoFullScreen else { return }
         config.windowWidth = Double(w.frame.width)
         config.windowHeight = Double(w.frame.height)
         ConfigStore.save(config)
