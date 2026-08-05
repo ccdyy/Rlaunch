@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install icon generator dependency
+        run: pip3 install Pillow
+
+      - name: Build Rlaunch.app
+        run: chmod +x build.sh && ./build.sh release
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PLIST="Rlaunch.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
+          echo "Version set to $VERSION"
+
+      - name: Package ZIP
+        run: |
+          ARCH="$(uname -m)"
+          ZIP="Rlaunch-${GITHUB_REF_NAME}-${ARCH}.zip"
+          ditto -c -k --sequesterRsrc --keepParent Rlaunch.app "$ZIP"
+          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Rlaunch ${{ github.ref_name }}
+          files: ${{ env.ZIP_NAME }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
