@@ -260,11 +260,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         reloadData()
     }
 
-    /// 需求 8：设置打开时点空白关闭设置；文件夹模式下点空白回到主界面
+    /// 需求 8：设置打开时点空白关闭设置；伪全屏时点空白关闭展示；文件夹模式下点空白回到主界面
     /// （搜索模式点击空白不做清空操作，避免误触导致"搜索失效"）
     private func handleBlankClick() {
         if let s = settingsController?.window, s.isVisible {
             settingsController?.close()
+            return
+        }
+        if isPseudoFullScreen {
+            hide()
             return
         }
         if currentFolderID != nil {
