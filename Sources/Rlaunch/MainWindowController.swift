@@ -1,6 +1,12 @@
 import Cocoa
 import RlaunchCore
 
+/// borderless 窗口默认 canBecomeKey = false，导致搜索框无法聚焦输入，必须覆盖
+private final class LauncherWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private var config: AppConfig
@@ -40,7 +46,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     init(config: AppConfig) {
         self.config = config
         let rect = NSRect(x: 0, y: 0, width: config.windowWidth, height: config.windowHeight)
-        let window = NSWindow(
+        let window = LauncherWindow(
             contentRect: rect,
             styleMask: [.borderless, .fullSizeContentView, .resizable],
             backing: .buffered,
