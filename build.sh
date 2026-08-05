@@ -7,8 +7,15 @@ CONFIG="${1:-release}"
 # --disable-sandbox: 本机 SPM 沙箱在当前 shell 环境不可用
 swift build -c "$CONFIG" --product Rlaunch --disable-sandbox
 
-# 生成并打包应用图标（门意象）
-python3 Resources/generate_icon.py
+# 生成并打包应用图标；CI 无 Pillow 时复用已提交的 icns/png
+if python3 -c "import PIL" 2>/dev/null; then
+    python3 Resources/generate_icon.py
+elif [ -f Resources/AppIcon.icns ] && [ -f Resources/MenuBarIcon.png ]; then
+    echo "跳过图标生成（使用已有 Resources/AppIcon.*）"
+else
+    echo "error: 需要 Pillow 生成图标，或提交 Resources/AppIcon.icns" >&2
+    exit 1
+fi
 
 APP="Rlaunch.app"
 rm -rf "$APP"

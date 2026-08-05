@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v0.1.0）"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,16 +21,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve release tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "RELEASE_TAG=${{ inputs.tag }}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=${{ github.ref_name }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Install icon generator dependency
-        run: pip3 install Pillow
+        run: pip install Pillow
 
       - name: Build Rlaunch.app
         run: chmod +x build.sh && ./build.sh release
 
       - name: Set version from tag
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           PLIST="Rlaunch.app/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
@@ -33,15 +54,16 @@ jobs:
       - name: Package ZIP
         run: |
           ARCH="$(uname -m)"
-          ZIP="Rlaunch-${GITHUB_REF_NAME}-${ARCH}.zip"
+          ZIP="Rlaunch-${RELEASE_TAG}-${ARCH}.zip"
           ditto -c -k --sequesterRsrc --keepParent Rlaunch.app "$ZIP"
           echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
 
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          name: Rlaunch ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Rlaunch ${{ env.RELEASE_TAG }}
           files: ${{ env.ZIP_NAME }}
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
