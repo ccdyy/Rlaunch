@@ -136,7 +136,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
-        window.level = .floating
+        window.level = .normal
         window.isReleasedWhenClosed = false
         window.isRestorable = false // 防止系统恢复自动弹出设置窗口
         super.init(window: window)

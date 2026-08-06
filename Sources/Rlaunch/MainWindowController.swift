@@ -64,11 +64,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 620, height: 440)
         window.collectionBehavior = [] // 不启用系统全屏，全屏由伪全屏自实现
         window.titleVisibility = .hidden
-        window.level = .floating
+        window.level = Self.windowLevel(isFullscreen: false, screen: nil, windowFrame: rect)
         window.isReleasedWhenClosed = false
         window.isRestorable = false
         super.init(window: window)
         window.delegate = self
+        setupActivationObservers()
 
         let root = RootView()
         root.controller = self
@@ -238,7 +239,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func activateApp(_ info: AppInfo) {
         NSWorkspace.shared.open(URL(fileURLWithPath: info.path))
-        if config.hideOnLaunch { hide() }
+        if config.hideOnLaunch || prefersNormalWindowStacking() {
+            hide()
+        }
     }
 
     private func openFolder(_ folder: FolderConfig) {
@@ -260,7 +263,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         reloadData()
     }
 
-    /// 设置打开时点空白关闭设置；文件夹模式下点空白回到主界面；其余情况点空白关闭展示
+    /// 设置打开时点空白关闭设置；文件夹模式下点空白回到主界面；大屏浮动模式下点空白关闭展示
     private func handleBlankClick() {
         if let s = settingsController?.window, s.isVisible {
             settingsController?.close()
@@ -270,6 +273,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             backToMain()
             return
         }
+        guard !prefersNormalWindowStacking() else { return }
         hide()
     }
 
@@ -418,16 +422,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             settingsController = controller
         }
         settingsController?.show(relativeTo: window)
-        // 伪全屏时主窗口层级高于菜单栏，设置窗口需同步抬高否则被盖住
-        if isPseudoFullScreen, let mw = window {
-            settingsController?.window?.level = mw.level
-        }
+        settingsController?.window?.level = window?.level ?? .normal
     }
 
     // MARK: - 显示 / 隐藏
 
     func show() {
         guard let window else { return }
+        applyWindowLevel()
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.alphaValue = 0
@@ -456,7 +458,100 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         reloadData()
     }
 
-    // MARK: - NSWindowDelegate
+    // MARK: - 窗口层级（小屏 / 占满屏幕时与普通应用一样参与切换）
+
+    /// 伪全屏，或窗口占可见区域 ≥ 70%，或笔记本级屏幕 —— 不应长期浮动置顶
+    private func prefersNormalWindowStacking() -> Bool {
+        guard let window, let screen = window.screen ?? NSScreen.main else { return false }
+        if isPseudoFullScreen { return true }
+        let vf = screen.visibleFrame
+        if vf.height <= 1200 || vf.width <= 1600 { return true }
+        let windowArea = window.frame.width * window.frame.height
+        let screenArea = max(vf.width * vf.height, 1)
+        return windowArea / screenArea >= 0.7
+    }
+
+    private static func windowLevel(isFullscreen: Bool, screen: NSScreen?, windowFrame: NSRect) -> NSWindow.Level {
+        let s = screen ?? NSScreen.main
+        let useNormal: Bool = {
+            guard let s else { return false }
+            if isFullscreen { return true }
+            let vf = s.visibleFrame
+            if vf.height <= 1200 || vf.width <= 1600 { return true }
+            let windowArea = windowFrame.width * windowFrame.height
+            let screenArea = max(vf.width * vf.height, 1)
+            return windowArea / screenArea >= 0.7
+        }()
+        if useNormal { return .normal }
+        if isFullscreen {
+            return NSWindow.Level(
+                rawValue: NSWindow.Level.RawValue(CGWindowLevelForKey(.mainMenuWindow)) + 1)
+        }
+        return .floating
+    }
+
+    private func applyWindowLevel() {
+        guard let window else { return }
+        window.level = Self.windowLevel(
+            isFullscreen: isPseudoFullScreen, screen: window.screen, windowFrame: window.frame)
+        if let settingsWindow = settingsController?.window, settingsWindow.isVisible {
+            settingsWindow.level = window.level
+        }
+    }
+
+    private func setupActivationObservers() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(otherAppDidActivate(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+    }
+
+    @objc private func otherAppDidActivate(_ note: Notification) {
+        guard window?.isVisible == true, prefersNormalWindowStacking() else { return }
+        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+        deferToOtherApps()
+    }
+
+    /// 失焦或切到其他应用时让出前台：占满屏幕则直接隐藏（类 Launchpad），否则置后
+    private func deferToOtherApps() {
+        guard window?.isVisible == true else { return }
+        if settingsController?.window?.isVisible == true {
+            settingsController?.close()
+        }
+        if isPseudoFullScreen || (window.map { w in
+            guard let screen = w.screen ?? NSScreen.main else { return false }
+            let vf = screen.visibleFrame
+            let ratio = (w.frame.width * w.frame.height) / max(vf.width * vf.height, 1)
+            return ratio >= 0.7
+        } ?? false) {
+            hide()
+            return
+        }
+        window?.level = .normal
+        window?.orderBack(nil)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        guard window?.isVisible == true, prefersNormalWindowStacking() else { return }
+        if shouldSkipDeferOnFocusLoss() { return }
+        // 延迟一帧，避免弹窗/Sheet 切换 key 窗口时误隐藏
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window, window.isVisible, !window.isKeyWindow else { return }
+            guard self.prefersNormalWindowStacking(), !self.shouldSkipDeferOnFocusLoss() else { return }
+            self.deferToOtherApps()
+        }
+    }
+
+    private func shouldSkipDeferOnFocusLoss() -> Bool {
+        if settingsController?.window?.isVisible == true { return true }
+        if NSApp.modalWindow != nil { return true }
+        if window?.attachedSheet != nil { return true }
+        if window?.isMiniaturized == true { return true }
+        return false
+    }
 
     /// 伪全屏切换：淡出 → 瞬间切到目标尺寸并完成全部布局 → 淡入。
     /// 全程无窗口尺寸动画，因此不存在内容变形/拉伸/重影的可能。
@@ -470,7 +565,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         } completionHandler: { [weak self] in
             guard let self, let window = self.window else { return }
             if self.isPseudoFullScreen {
-                window.level = .floating
+                self.applyWindowLevel()
                 window.setFrame(self.frameBeforeFullScreen, display: false)
                 self.isPseudoFullScreen = false
                 window.isMovableByWindowBackground = true
@@ -479,13 +574,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.topBar.setFullscreen(false)
             } else {
                 self.frameBeforeFullScreen = window.frame
-                // 抬高窗口层级以盖住菜单栏，达到真全屏的视觉效果
-                window.level = NSWindow.Level(
-                    rawValue: NSWindow.Level.RawValue(CGWindowLevelForKey(.mainMenuWindow)) + 1)
                 if let screen = window.screen ?? NSScreen.main {
                     window.setFrame(screen.frame, display: false)
                 }
                 self.isPseudoFullScreen = true
+                self.applyWindowLevel()
                 window.isMovableByWindowBackground = false // 防止全屏时被拖走
                 window.contentView?.layer?.cornerRadius = 0
                 self.topBar.traffic.isHidden = true
@@ -508,5 +601,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         config.windowWidth = Double(w.frame.width)
         config.windowHeight = Double(w.frame.height)
         ConfigStore.save(config)
+        applyWindowLevel()
     }
 }
