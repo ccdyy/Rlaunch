@@ -38,7 +38,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let b = bounds
             // 全屏时顶部留出安全区（刘海屏菜单栏区域），按系统安全区动态取值
             let isFullscreen = c.isPseudoFullScreen
-            let topInset: CGFloat = isFullscreen ? (c.window?.screen?.safeAreaInsets.top ?? 18) : 0
+            let topInset: CGFloat = isFullscreen ? c.fullscreenTopInset() : 0
             c.background.frame = b
             c.topBar.frame = NSRect(x: 0, y: b.height - 56 - topInset, width: b.width, height: 56)
             c.scrollView.frame = NSRect(x: 0, y: 0, width: b.width, height: max(b.height - 56 - topInset, 0))
@@ -239,7 +239,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func activateApp(_ info: AppInfo) {
         NSWorkspace.shared.open(URL(fileURLWithPath: info.path))
-        if config.hideOnLaunch || prefersNormalWindowStacking() {
+        if config.hideOnLaunch || prefersNormalWindowStacking() || isPseudoFullScreen {
             hide()
         }
     }
@@ -460,10 +460,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - 窗口层级（小屏 / 占满屏幕时与普通应用一样参与切换）
 
-    /// 伪全屏，或窗口占可见区域 ≥ 70%，或笔记本级屏幕 —— 不应长期浮动置顶
+    /// 窗口占可见区域 ≥ 70%，或笔记本级屏幕 —— 非全屏时不浮动置顶
     private func prefersNormalWindowStacking() -> Bool {
         guard let window, let screen = window.screen ?? NSScreen.main else { return false }
-        if isPseudoFullScreen { return true }
         let vf = screen.visibleFrame
         if vf.height <= 1200 || vf.width <= 1600 { return true }
         let windowArea = window.frame.width * window.frame.height
@@ -472,22 +471,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private static func windowLevel(isFullscreen: Bool, screen: NSScreen?, windowFrame: NSRect) -> NSWindow.Level {
+        if isFullscreen {
+            // 抬高至菜单栏之上，隐藏系统菜单栏，实现真正全屏
+            return NSWindow.Level(
+                rawValue: NSWindow.Level.RawValue(CGWindowLevelForKey(.mainMenuWindow)) + 1)
+        }
         let s = screen ?? NSScreen.main
         let useNormal: Bool = {
             guard let s else { return false }
-            if isFullscreen { return true }
             let vf = s.visibleFrame
             if vf.height <= 1200 || vf.width <= 1600 { return true }
             let windowArea = windowFrame.width * windowFrame.height
             let screenArea = max(vf.width * vf.height, 1)
             return windowArea / screenArea >= 0.7
         }()
-        if useNormal { return .normal }
-        if isFullscreen {
-            return NSWindow.Level(
-                rawValue: NSWindow.Level.RawValue(CGWindowLevelForKey(.mainMenuWindow)) + 1)
-        }
-        return .floating
+        return useNormal ? .normal : .floating
+    }
+
+    private static func pseudoFullScreenFrame(for screen: NSScreen) -> NSRect {
+        screen.frame
+    }
+
+    /// 全屏顶栏下移，为刘海/安全区留白
+    func fullscreenTopInset() -> CGFloat {
+        guard isPseudoFullScreen, let screen = window?.screen ?? NSScreen.main else { return 0 }
+        return screen.safeAreaInsets.top
     }
 
     private func applyWindowLevel() {
@@ -509,7 +517,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func otherAppDidActivate(_ note: Notification) {
-        guard window?.isVisible == true, prefersNormalWindowStacking() else { return }
+        guard window?.isVisible == true else { return }
+        guard isPseudoFullScreen || prefersNormalWindowStacking() else { return }
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
         deferToOtherApps()
@@ -535,12 +544,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        guard window?.isVisible == true, prefersNormalWindowStacking() else { return }
+        guard window?.isVisible == true else { return }
+        guard isPseudoFullScreen || prefersNormalWindowStacking() else { return }
         if shouldSkipDeferOnFocusLoss() { return }
         // 延迟一帧，避免弹窗/Sheet 切换 key 窗口时误隐藏
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window, window.isVisible, !window.isKeyWindow else { return }
-            guard self.prefersNormalWindowStacking(), !self.shouldSkipDeferOnFocusLoss() else { return }
+            guard self.isPseudoFullScreen || self.prefersNormalWindowStacking(),
+                  !self.shouldSkipDeferOnFocusLoss() else { return }
             self.deferToOtherApps()
         }
     }
@@ -575,7 +586,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             } else {
                 self.frameBeforeFullScreen = window.frame
                 if let screen = window.screen ?? NSScreen.main {
-                    window.setFrame(screen.frame, display: false)
+                    window.setFrame(Self.pseudoFullScreenFrame(for: screen), display: false)
                 }
                 self.isPseudoFullScreen = true
                 self.applyWindowLevel()
