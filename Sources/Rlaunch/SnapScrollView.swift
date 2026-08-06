@@ -1,6 +1,6 @@
 import Cocoa
 
-/// 横向分页滚动视图：滚动停止后自动吸附到最近的整页（page snapping）。
+/// 横向分页滚动视图：拖动时 1:1 跟手，松手后吸附到最近整页。
 final class SnapScrollView: NSScrollView {
     var onPageChanged: ((Int) -> Void)?
     var onEscape: (() -> Void)?
@@ -8,15 +8,18 @@ final class SnapScrollView: NSScrollView {
     private(set) var pageCount = 1
     private(set) var currentPage = 0
     private var snapTimer: Timer?
+    /// 触控板手势进行中（began…ended），避免误触发滚轮吸附定时器
+    private var isTouchScrolling = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         drawsBackground = false
-        horizontalScrollElasticity = .automatic
+        horizontalScrollElasticity = .allowed
         verticalScrollElasticity = .none
         hasVerticalScroller = false
         hasHorizontalScroller = false
         scrollerStyle = .overlay
+        usesPredominantAxisScrolling = true
         contentView.postsBoundsChangedNotifications = true
     }
 
@@ -29,29 +32,46 @@ final class SnapScrollView: NSScrollView {
     // MARK: 滚动与吸附
 
     override func scrollWheel(with event: NSEvent) {
-        // 打断进行中的吸附动画
         contentView.layer?.removeAllAnimations()
-        super.scrollWheel(with: event)
+        snapTimer?.invalidate()
 
-        if event.momentumPhase.contains(.ended) {
-            // 触控板惯性滚动结束：立即吸附
-            snapTimer?.invalidate()
-            snap()
-            return
-        }
+        // 系统惯性不参与跟手滚动，仅在惯性结束时收敛吸附
         if !event.momentumPhase.isEmpty {
-            // 惯性进行中：等惯性结束再吸附
-            snapTimer?.invalidate()
+            if event.momentumPhase.contains(.ended) { snap() }
             return
         }
+
+        if event.phase.contains(.began) { isTouchScrolling = true }
         if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-            // 手指抬起：极短延迟确认无惯性后吸附（若有惯性，momentum 事件会接管并取消定时器）
-            scheduleSnap(delay: 0.03)
-            return
+            isTouchScrolling = false
         }
-        // 触控板手指拖动中不吸附；鼠标滚轮无 phase 事件，用短定时器兜底
-        guard event.phase.isEmpty else { return }
-        scheduleSnap(delay: 0.08)
+
+        let dx = horizontalDelta(from: event)
+        if dx != 0 {
+            scrollHorizontally(by: dx)
+        }
+
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            snap()
+        } else if event.phase.isEmpty && !event.hasPreciseScrollingDeltas && !isTouchScrolling {
+            // 仅鼠标滚轮（无 phase、非精确 delta）
+            scheduleSnap(delay: 0.08)
+        }
+    }
+
+    private func horizontalDelta(from event: NSEvent) -> CGFloat {
+        let raw = event.scrollingDeltaX
+        if event.hasPreciseScrollingDeltas { return raw }
+        return raw * 12
+    }
+
+    /// AppKit 惯例：bounds.origin 与 scrollingDelta 反向（减 delta 才是跟手方向）
+    private func scrollHorizontally(by delta: CGFloat) {
+        let pageW = max(contentView.bounds.width, 1)
+        let maxX = CGFloat(max(pageCount - 1, 0)) * pageW
+        var x = contentView.bounds.origin.x - delta
+        x = min(max(x, 0), maxX)
+        contentView.setBoundsOrigin(NSPoint(x: x, y: 0))
     }
 
     private func scheduleSnap(delay: TimeInterval) {
@@ -65,16 +85,13 @@ final class SnapScrollView: NSScrollView {
 
     func snap() {
         snapTimer?.invalidate()
-        let pageW = max(contentView.bounds.width, 1)
-        let target = Int((contentView.bounds.origin.x + pageW / 2) / pageW)
-        scrollToPage(target, animated: true)
+        scrollToPage(nearestPage(), animated: true)
     }
 
     func scrollToPage(_ page: Int, animated: Bool) {
         let clamped = min(max(page, 0), pageCount - 1)
         let targetX = CGFloat(clamped) * max(contentView.bounds.width, 1)
         let currentX = contentView.bounds.origin.x
-        // 乐观更新页码：动画期间连按翻页不丢页
         if currentPage != clamped {
             currentPage = clamped
             onPageChanged?(clamped)
@@ -86,7 +103,6 @@ final class SnapScrollView: NSScrollView {
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 contentView.animator().setBoundsOrigin(NSPoint(x: targetX, y: 0))
             } completionHandler: { [weak self] in
-                // 动画被滚动打断时也收敛到实际所在页
                 guard let self else { return }
                 let actual = self.nearestPage()
                 if self.currentPage != actual {
