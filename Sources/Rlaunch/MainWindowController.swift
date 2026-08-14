@@ -263,7 +263,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         reloadData()
     }
 
-    /// 设置打开时点空白关闭设置；文件夹模式下点空白回到主界面；大屏浮动模式下点空白关闭展示
+    /// 设置打开时点空白关闭设置；文件夹模式下点空白回到主界面；
+    /// 全屏时点空白关闭界面（并恢复窗口尺寸）；大屏浮动模式下点空白关闭展示
     private func handleBlankClick() {
         if let s = settingsController?.window, s.isVisible {
             settingsController?.close()
@@ -271,6 +272,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         if currentFolderID != nil {
             backToMain()
+            return
+        }
+        if isPseudoFullScreen {
+            hide() // 全屏时点击空白处关闭界面
             return
         }
         guard !prefersNormalWindowStacking() else { return }
@@ -427,6 +432,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - 显示 / 隐藏
 
+    var isVisible: Bool { window?.isVisible == true }
+
     func show() {
         guard let window else { return }
         applyWindowLevel()
@@ -440,8 +447,45 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.makeFirstResponder(scrollView)
     }
 
+    /// 捏合手势唤起：显示并直接进入全屏（隐藏状态下窗口保持普通尺寸，先铺满再淡入）
+    func showFullScreen() {
+        guard let window else { return }
+        if !isPseudoFullScreen {
+            if let screen = window.screen ?? NSScreen.main {
+                frameBeforeFullScreen = window.frame
+                window.setFrame(Self.pseudoFullScreenFrame(for: screen), display: false)
+            }
+            isPseudoFullScreen = true
+            window.isMovableByWindowBackground = false
+            window.contentView?.layer?.cornerRadius = 0
+            topBar.traffic.isHidden = true
+            topBar.setFullscreen(true)
+            applyWindowLevel()
+            window.contentView?.layoutSubtreeIfNeeded()
+            applyGridConfig()
+        }
+        show()
+    }
+
     func hide() {
+        if isPseudoFullScreen { restoreFromFullScreen() }
         window?.orderOut(nil)
+    }
+
+    /// 关闭界面时若处于全屏：先恢复普通尺寸与状态，下次唤起从普通窗口开始
+    private func restoreFromFullScreen() {
+        guard let window else { return }
+        if frameBeforeFullScreen != .zero {
+            window.setFrame(frameBeforeFullScreen, display: false)
+        }
+        isPseudoFullScreen = false
+        window.isMovableByWindowBackground = true
+        window.contentView?.layer?.cornerRadius = 18
+        topBar.traffic.isHidden = false
+        topBar.setFullscreen(false)
+        applyWindowLevel()
+        window.contentView?.layoutSubtreeIfNeeded() // 先按普通尺寸完成根布局
+        applyGridConfig()                           // 再恢复普通间距并重排页面
     }
 
     func toggle() {
@@ -451,11 +495,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 配置变更
 
     @objc private func configDidChange() {
+        let page = scrollView.currentPage
         config = ConfigStore.load()
         ThemeManager.current = config.theme
         background.setConfig(config)
         topBar.setFolderMode(name: currentFolder?.name)
         reloadData()
+        // reloadData 会回到第一页：设置变更/关闭设置时保持用户所在页
+        if scrollView.pageCount > 1 {
+            scrollView.scrollToPage(min(page, scrollView.pageCount - 1), animated: false)
+            topBar.setPage(scrollView.currentPage, of: scrollView.pageCount)
+        }
     }
 
     // MARK: - 窗口层级（小屏 / 占满屏幕时与普通应用一样参与切换）
@@ -576,9 +626,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         } completionHandler: { [weak self] in
             guard let self, let window = self.window else { return }
             if self.isPseudoFullScreen {
-                self.applyWindowLevel()
                 window.setFrame(self.frameBeforeFullScreen, display: false)
                 self.isPseudoFullScreen = false
+                self.applyWindowLevel() // 先恢复全屏状态再套层级，避免残留全屏层级
                 window.isMovableByWindowBackground = true
                 window.contentView?.layer?.cornerRadius = 18
                 self.topBar.traffic.isHidden = false

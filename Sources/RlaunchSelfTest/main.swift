@@ -112,6 +112,20 @@ func testConfigStore() throws {
     check(loaded.folders.first?.name == "工具", "文件夹配置往返一致")
     check(loaded.recursionDepth == 3, "默认递归层级为 3")
 
+    // 快捷键字段往返（keyCode=49 Space，modifiers=256 cmdKey）
+    var hot = cfg
+    hot.hotKeyEnabled = true
+    hot.hotKeyKeyCode = 49
+    hot.hotKeyModifiers = 256
+    hot.pinchEnabled = false
+    hot.pinchThreshold = 1.2
+    check(ConfigStore.save(hot), "保存快捷键/捏合配置")
+    let hotLoaded = ConfigStore.load()
+    check(hotLoaded.hotKeyEnabled && hotLoaded.hotKeyKeyCode == 49 && hotLoaded.hotKeyModifiers == 256,
+          "快捷键字段往返一致")
+    check(hotLoaded.pinchEnabled == false && hotLoaded.pinchThreshold == 1.2, "捏合字段往返一致")
+    check(ConfigStore.save(cfg), "恢复默认配置")
+
     // 迁移分支 1：旧默认扫描目录 → 自动补上 /System/Applications
     var legacy = cfg
     legacy.scanPaths = ["/Applications",
@@ -139,6 +153,9 @@ func testConfigStore() throws {
         check(decoded.columnSpacing == 24 && decoded.rowSpacing == 24
               && decoded.fullscreenSpacingScale == 1.6, "旧配置缺新字段时使用默认值")
         check(decoded.scanPaths == ["/Applications", "/Users/olduser/Applications"], "旧配置自定义路径不被迁移")
+        check(decoded.pinchEnabled == true && decoded.pinchThreshold == 0.7,
+              "旧 gesture 字段迁移为捏合字段")
+        check(decoded.hotKeyKeyCode == nil && decoded.hotKeyEnabled == false, "旧配置默认无快捷键")
     } else {
         check(false, "旧格式配置可正常解码（缺新字段不崩溃）")
     }

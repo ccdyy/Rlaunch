@@ -1,15 +1,17 @@
 import Cocoa
 
 // MARK: - 三色圆点按钮（红=隐藏、黄=最小化、绿=全屏）
+// 鼠标悬停时整组按钮显示对应符号（关闭 × / 缩小 − / 全屏 ⤢），
+// 单个按钮悬停时颜色加深，与 macOS 原生红绿灯一致。
 
 final class TrafficLightsView: NSView {
     var onRed: (() -> Void)?
     var onYellow: (() -> Void)?
     var onGreen: (() -> Void)?
 
-    private let redDot = DotButton(color: NSColor(red: 1.0, green: 0.373, blue: 0.341, alpha: 1.0))
-    private let yellowDot = DotButton(color: NSColor(red: 0.996, green: 0.745, blue: 0.18, alpha: 1.0))
-    private let greenDot = DotButton(color: NSColor(red: 0.157, green: 0.784, blue: 0.251, alpha: 1.0))
+    private let redDot = DotButton(color: NSColor(red: 1.0, green: 0.373, blue: 0.341, alpha: 1.0), glyph: "xmark")
+    private let yellowDot = DotButton(color: NSColor(red: 0.996, green: 0.745, blue: 0.18, alpha: 1.0), glyph: "minus")
+    private let greenDot = DotButton(color: NSColor(red: 0.157, green: 0.784, blue: 0.251, alpha: 1.0), glyph: "arrow.up.left.and.arrow.down.right")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -17,8 +19,6 @@ final class TrafficLightsView: NSView {
         yellowDot.onClick = { [weak self] in self?.onYellow?() }
         greenDot.onClick = { [weak self] in self?.onGreen?() }
         for d in [redDot, yellowDot, greenDot] {
-            d.wantsLayer = true
-            d.layer?.cornerRadius = 6
             addSubview(d)
         }
     }
@@ -36,19 +36,58 @@ final class TrafficLightsView: NSView {
             x += size + gap
         }
     }
+
+    // 整组悬停：三个按钮同时显示符号（macOS 原生行为）
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        for d in [redDot, yellowDot, greenDot] { d.showsGlyph = true }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        for d in [redDot, yellowDot, greenDot] { d.showsGlyph = false }
+    }
 }
 
 private final class DotButton: NSView {
     var onClick: (() -> Void)?
-    private var hovered = false
+    var showsGlyph = false {
+        didSet { if showsGlyph != oldValue { needsDisplay = true } }
+    }
+    private var hovered = false {
+        didSet { if hovered != oldValue { needsDisplay = true } }
+    }
+    private let baseColor: NSColor
+    private let glyph: String
 
-    init(color: NSColor) {
+    init(color: NSColor, glyph: String) {
+        self.baseColor = color
+        self.glyph = glyph
         super.init(frame: .zero)
-        wantsLayer = true
-        layer?.backgroundColor = color.cgColor
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // 悬停时颜色加深
+        let color = hovered ? (baseColor.blended(withFraction: 0.3, of: .black) ?? baseColor) : baseColor
+        color.setFill()
+        NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5)).fill()
+
+        if showsGlyph, let symbol = NSImage(systemSymbolName: glyph, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)) {
+            let tinted = symbol.tinted(with: NSColor.black.withAlphaComponent(0.62))
+            let size = tinted.size
+            tinted.draw(in: NSRect(x: (bounds.width - size.width) / 2,
+                                   y: (bounds.height - size.height) / 2,
+                                   width: size.width, height: size.height))
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
         onClick?()
@@ -63,12 +102,61 @@ private final class DotButton: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         hovered = true
-        layer?.opacity = 0.6
     }
 
     override func mouseExited(with event: NSEvent) {
         hovered = false
-        layer?.opacity = 1.0
+    }
+}
+
+private extension NSImage {
+    /// 返回按指定颜色着色的副本（用于在圆点上绘制深色符号）
+    func tinted(with color: NSColor) -> NSImage {
+        guard let copy = self.copy() as? NSImage else { return self }
+        copy.lockFocus()
+        color.set()
+        NSRect(origin: .zero, size: size).fill(using: .sourceAtop)
+        copy.unlockFocus()
+        return copy
+    }
+}
+
+// MARK: - 搜索框（修复放大镜图标被拉伸：固定搜索按钮尺寸、等比例符号图）
+
+final class SearchField: NSSearchField {
+    override class var cellClass: AnyClass? {
+        get { SearchFieldCell.self }
+        set { }
+    }
+}
+
+final class SearchFieldCell: NSSearchFieldCell {
+    override init(textCell string: String) {
+        super.init(textCell: string)
+        configure()
+    }
+
+    required init(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    private func configure() {
+        // 用固定点位的 SF Symbol 替换默认放大镜，避免随控件高度被拉伸
+        let button = searchButtonCell ?? NSButtonCell()
+        button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+        button.imageScaling = .scaleNone
+        button.isTransparent = true
+        button.isBordered = false
+        searchButtonCell = button
+    }
+
+    override func searchButtonRect(forBounds rect: NSRect) -> NSRect {
+        var r = super.searchButtonRect(forBounds: rect)
+        r.size = NSSize(width: 18, height: 18)
+        r.origin.y = rect.midY - 9
+        return r
     }
 }
 
@@ -148,7 +236,7 @@ final class TopBarView: NSView {
     var onBackToMain: (() -> Void)?
 
     let traffic = TrafficLightsView()
-    let searchField = NSSearchField()
+    let searchField = SearchField()
     let pageLabel = PageLabel()
     let fullscreenButton = SymbolButton(symbol: "arrow.up.left.and.arrow.down.right")
     let settingsButton = SymbolButton(symbol: "gearshape")

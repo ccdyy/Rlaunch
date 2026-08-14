@@ -62,9 +62,13 @@ public struct AppConfig: Codable, Equatable {
     public var rowSpacing: Double = 24
     public var fullscreenSpacingScale: Double = 1.6  // 全屏时列/行间距放大倍数
     public var iconSize: Double = 64
-    // 手势
-    public var gestureEnabled: Bool = true
-    public var gestureThreshold: Double = 0.7    // 捏合幅度阈值（灵敏度）
+    // 快捷键（Carbon RegisterEventHotKey：keyCode + 修饰键位；keyCode 为 nil 表示未录制）
+    public var hotKeyEnabled: Bool = false
+    public var hotKeyKeyCode: Int?
+    public var hotKeyModifiers: Int = 0
+    // 捏合手势（四指/五指捏合：打开并全屏）
+    public var pinchEnabled: Bool = true
+    public var pinchThreshold: Double = 0.7    // 捏合幅度阈值（灵敏度）
     // 文件夹
     public var folders: [FolderConfig] = []
     // 窗口
@@ -103,8 +107,15 @@ public struct AppConfig: Codable, Equatable {
         rowSpacing = try c.decodeIfPresent(Double.self, forKey: .rowSpacing) ?? 24
         fullscreenSpacingScale = try c.decodeIfPresent(Double.self, forKey: .fullscreenSpacingScale) ?? 1.6
         iconSize = try c.decodeIfPresent(Double.self, forKey: .iconSize) ?? 64
-        gestureEnabled = try c.decodeIfPresent(Bool.self, forKey: .gestureEnabled) ?? true
-        gestureThreshold = try c.decodeIfPresent(Double.self, forKey: .gestureThreshold) ?? 0.7
+        hotKeyEnabled = try c.decodeIfPresent(Bool.self, forKey: .hotKeyEnabled) ?? false
+        hotKeyKeyCode = try c.decodeIfPresent(Int.self, forKey: .hotKeyKeyCode)
+        hotKeyModifiers = try c.decodeIfPresent(Int.self, forKey: .hotKeyModifiers) ?? 0
+        // 旧版「手势」字段迁移为捏合字段（解码阶段一次性兼容，编码只写新字段）
+        let legacyContainer = try decoder.container(keyedBy: LegacyKeys.self)
+        let legacyEnabled = try legacyContainer.decodeIfPresent(Bool.self, forKey: .gestureEnabled)
+        let legacyThreshold = try legacyContainer.decodeIfPresent(Double.self, forKey: .gestureThreshold)
+        pinchEnabled = try c.decodeIfPresent(Bool.self, forKey: .pinchEnabled) ?? legacyEnabled ?? true
+        pinchThreshold = try c.decodeIfPresent(Double.self, forKey: .pinchThreshold) ?? legacyThreshold ?? 0.7
         folders = try c.decodeIfPresent([FolderConfig].self, forKey: .folders) ?? []
         windowWidth = try c.decodeIfPresent(Double.self, forKey: .windowWidth) ?? 1020
         windowHeight = try c.decodeIfPresent(Double.self, forKey: .windowHeight) ?? 700
@@ -119,6 +130,12 @@ public struct AppConfig: Codable, Equatable {
 
     public func folder(containing path: String) -> FolderConfig? {
         folders.first { $0.appPaths.contains(path) }
+    }
+
+    /// 旧版配置字段（仅解码用，编码只写新字段）
+    private enum LegacyKeys: String, CodingKey {
+        case gestureEnabled
+        case gestureThreshold
     }
 }
 

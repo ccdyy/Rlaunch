@@ -1,4 +1,5 @@
 import Cocoa
+import ApplicationServices
 import UniformTypeIdentifiers
 import RlaunchCore
 
@@ -28,6 +29,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var config = ConfigStore.load()
     private var saveDebounce: Timer?
     private var keyMonitor: Any?
+    private var recordMonitor: Any?
+    private var isRecordingShortcut = false
 
     // MARK: 控件
 
@@ -54,10 +57,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let iconSizeValue = makeValueLabel(44)
     private let depthStepper: NSStepper = makeStepper(value: 3, min: 1, max: 6)
     private let depthValue = makeValueLabel(44)
-    private let gestureSwitch = NSSwitch()
-    private let gestureSwitchLabel = NSTextField(labelWithString: "启用捏合手势唤起")
-    private let gestureSlider = NSSlider(value: 0.7, minValue: 0.3, maxValue: 2.0, target: nil, action: nil)
-    private let gestureValue = makeValueLabel(44)
+    // 快捷键
+    private let hotKeySwitch = NSSwitch()
+    private let hotKeySwitchLabel = NSTextField(labelWithString: "启用全局快捷键唤起")
+    private let hotKeyLabel = NSTextField(labelWithString: "未设置")
+    private let recordButton = NSButton(title: "录制快捷键…", target: nil, action: nil)
+    private let clearShortcutButton = NSButton(title: "清除", target: nil, action: nil)
+    // 四指/五指捏合
+    private let pinchSwitch = NSSwitch()
+    private let pinchSwitchLabel = NSTextField(labelWithString: "四指/五指捏合：打开并全屏")
+    private let pinchSlider = NSSlider(value: 0.7, minValue: 0.3, maxValue: 2.0, target: nil, action: nil)
+    private let pinchValue = makeValueLabel(44)
+    // 权限快捷入口
+    private let axStatusLabel = NSTextField(labelWithString: "辅助功能：未授权")
+    private let axButton = NSButton(title: "打开权限设置…", target: nil, action: nil)
+    private let trackpadButton = NSButton(title: "触控板手势设置…", target: nil, action: nil)
     private let scanRowsStack = NSStackView()
     private let rescanButton = NSButton(title: "重新扫描应用", target: nil, action: nil)
 
@@ -206,6 +220,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     deinit {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        if let recordMonitor { NSEvent.removeMonitor(recordMonitor) }
     }
 
     // MARK: - 控件构建
@@ -237,7 +252,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Tab 构建
 
     private func buildTabsAndPages() {
-        let titles = ["外观", "网格", "扫描目录", "手势", "操作"]
+        let titles = ["外观", "网格", "扫描目录", "快捷键", "操作"]
         for (i, title) in titles.enumerated() {
             let btn = TabButton(title: title)
             btn.onSelect = { [weak self] in self?.selectTab(i) }
@@ -259,13 +274,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         buildAppearancePage(contentStacks[0])
         buildGridPage(contentStacks[1])
         buildScanPage(contentStacks[2])
-        buildGesturePage(contentStacks[3])
+        buildShortcutPage(contentStacks[3])
         buildActionPage(contentStacks[4])
 
         // 公共 action
         let controls: [NSControl] = [themeControl, opacitySlider, blurSlider, columnsStepper,
                                      rowsStepper, columnSpacingSlider, rowSpacingSlider, fullscreenScaleSlider,
-                                     iconSizeSlider, depthStepper, gestureSlider, gestureSwitch]
+                                     iconSizeSlider, depthStepper, pinchSlider, pinchSwitch, hotKeySwitch]
         for c in controls {
             c.target = self
             c.action = #selector(controlChanged)
@@ -307,11 +322,43 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(controlRow("递归层级", depthStepper, depthValue))
     }
 
-    private func buildGesturePage(_ stack: NSStackView) {
-        gestureSwitch.controlSize = .small
-        gestureSwitchLabel.font = .systemFont(ofSize: 13)
-        stack.addArrangedSubview(row([gestureSwitch, gestureSwitchLabel]))
-        stack.addArrangedSubview(controlRow("捏合灵敏度", gestureSlider, gestureValue))
+    private func buildShortcutPage(_ stack: NSStackView) {
+        hotKeySwitch.controlSize = .small
+        pinchSwitch.controlSize = .small
+        hotKeySwitchLabel.font = .systemFont(ofSize: 13)
+        pinchSwitchLabel.font = .systemFont(ofSize: 13)
+        hotKeyLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
+        hotKeyLabel.textColor = .labelColor
+        hotKeyLabel.setContentHuggingPriority(.required, for: .horizontal)
+        recordButton.target = self
+        recordButton.action = #selector(recordShortcut)
+        clearShortcutButton.target = self
+        clearShortcutButton.action = #selector(clearShortcut)
+        axButton.target = self
+        axButton.action = #selector(openAccessibilitySettings)
+        trackpadButton.target = self
+        trackpadButton.action = #selector(openTrackpadSettings)
+
+        stack.addArrangedSubview(row([hotKeySwitch, hotKeySwitchLabel]))
+        stack.addArrangedSubview(row([recordButton, hotKeyLabel, clearShortcutButton]))
+        stack.addArrangedSubview(row([pinchSwitch, pinchSwitchLabel]))
+        stack.addArrangedSubview(controlRow("捏合灵敏度", pinchSlider, pinchValue))
+
+        // 权限快捷入口
+        axStatusLabel.font = .systemFont(ofSize: 12)
+        axStatusLabel.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(row([axStatusLabel, axButton]))
+        stack.addArrangedSubview(row([trackpadButton]))
+
+        let hint = NSTextField(wrappingLabelWithString:
+            "说明：四指/五指捏合通过系统手势事件中的触点位置计算「手指间距收缩」识别（需要辅助功能权限）。"
+            + "若系统设置里已勾选 Rlaunch 但仍显示「未授权」（更新应用后常见）："
+            + "请在「辅助功能」列表里把 Rlaunch 先关掉再打开一次（或选中后按减号移除、再用加号重新添加），"
+            + "然后重启 Rlaunch。捏合被系统手势占用时可在「触控板手势设置」中调整。")
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        hint.preferredMaxLayoutWidth = 360
+        stack.addArrangedSubview(hint)
     }
 
     private func buildActionPage(_ stack: NSStackView) {
@@ -361,10 +408,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         iconSizeValue.stringValue = "\(Int(config.iconSize))"
         depthStepper.intValue = Int32(config.recursionDepth)
         depthValue.stringValue = "\(config.recursionDepth)"
-        gestureSwitch.state = config.gestureEnabled ? .on : .off
-        gestureSlider.doubleValue = config.gestureThreshold
-        gestureValue.stringValue = String(format: "%.2f", config.gestureThreshold)
+        hotKeySwitch.state = config.hotKeyEnabled ? .on : .off
+        hotKeyLabel.stringValue = ShortcutFormatter.displayString(
+            keyCode: config.hotKeyKeyCode, carbonModifiers: config.hotKeyModifiers)
+        pinchSwitch.state = config.pinchEnabled ? .on : .off
+        pinchSlider.doubleValue = config.pinchThreshold
+        pinchValue.stringValue = String(format: "%.2f", config.pinchThreshold)
+        refreshPermissionStatus()
         rebuildScanRows()
+    }
+
+    private func refreshPermissionStatus() {
+        let trusted = AXIsProcessTrusted()
+        axStatusLabel.stringValue = trusted ? "辅助功能：已授权 ✓" : "辅助功能：未授权"
+        axStatusLabel.textColor = trusted ? .systemGreen : .systemRed
     }
 
     private func rebuildScanRows() {
@@ -407,8 +464,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         config.fullscreenSpacingScale = fullscreenScaleSlider.doubleValue
         config.iconSize = iconSizeSlider.doubleValue
         config.recursionDepth = depthStepper.intValue > 0 ? Int(depthStepper.intValue) : config.recursionDepth
-        config.gestureEnabled = gestureSwitch.state == .on
-        config.gestureThreshold = gestureSlider.doubleValue
+        config.hotKeyEnabled = hotKeySwitch.state == .on
+        config.pinchEnabled = pinchSwitch.state == .on
+        config.pinchThreshold = pinchSlider.doubleValue
+
+        // 开启捏合但未授权时，主动拉起系统授权弹窗
+        if sender as? NSSwitch === pinchSwitch, config.pinchEnabled, !AXIsProcessTrusted() {
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            AXIsProcessTrustedWithOptions(options)
+        }
 
         ThemeManager.current = config.theme // 主题即时生效
         refreshValues()
@@ -433,6 +497,78 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         config.backgroundImagePath = nil
         refreshValues()
         scheduleSave()
+    }
+
+    // MARK: - 快捷键录制
+
+    /// 录制中的修饰键 keyCode（Cmd/Shift/CapsLock/Option/Control/Fn 及其右侧版本）
+    private static let modifierKeyCodes: Set<Int> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+
+    @objc private func recordShortcut() {
+        if isRecordingShortcut {
+            finishRecording(cancelled: true)
+            return
+        }
+        isRecordingShortcut = true
+        recordButton.title = "请按下组合键…（Esc 取消）"
+        recordMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self, self.isRecordingShortcut else { return event }
+            let code = Int(event.keyCode)
+            if code == 53 { // Esc 取消录制
+                self.finishRecording(cancelled: true)
+                return nil
+            }
+            if code == 51 { // Delete 清除快捷键
+                self.config.hotKeyKeyCode = nil
+                self.config.hotKeyModifiers = 0
+                self.config.hotKeyEnabled = false
+                self.finishRecording(cancelled: false)
+                return nil
+            }
+            guard !Self.modifierKeyCodes.contains(code) else { return nil } // 忽略纯修饰键
+            let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            guard !mods.isEmpty else { return nil } // 至少带一个修饰键，避免误触
+            self.config.hotKeyKeyCode = code
+            self.config.hotKeyModifiers = Int(ShortcutFormatter.carbonModifiers(from: mods))
+            self.config.hotKeyEnabled = true
+            self.finishRecording(cancelled: false)
+            return nil
+        }
+    }
+
+    private func finishRecording(cancelled: Bool) {
+        if let recordMonitor {
+            NSEvent.removeMonitor(recordMonitor)
+            self.recordMonitor = nil
+        }
+        isRecordingShortcut = false
+        recordButton.title = "录制快捷键…"
+        refreshValues()
+        scheduleSave()
+    }
+
+    @objc private func clearShortcut() {
+        config.hotKeyKeyCode = nil
+        config.hotKeyModifiers = 0
+        config.hotKeyEnabled = false
+        refreshValues()
+        scheduleSave()
+    }
+
+    // MARK: - 权限快捷入口
+
+    @objc private func openAccessibilitySettings() {
+        NSWorkspace.shared.open(
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    @objc private func openTrackpadSettings() {
+        NSWorkspace.shared.open(
+            URL(string: "x-apple.systempreferences:com.apple.preference.trackpad")!)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        refreshPermissionStatus() // 从系统设置授权返回后刷新状态
     }
 
     @objc private func addScanPath() {
@@ -489,8 +625,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         latest.rowSpacing = config.rowSpacing
         latest.fullscreenSpacingScale = config.fullscreenSpacingScale
         latest.iconSize = config.iconSize
-        latest.gestureEnabled = config.gestureEnabled
-        latest.gestureThreshold = config.gestureThreshold
+        latest.hotKeyEnabled = config.hotKeyEnabled
+        latest.hotKeyKeyCode = config.hotKeyKeyCode
+        latest.hotKeyModifiers = config.hotKeyModifiers
+        latest.pinchEnabled = config.pinchEnabled
+        latest.pinchThreshold = config.pinchThreshold
         ConfigStore.save(latest)
     }
 
@@ -507,6 +646,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     override func close() {
         saveDebounce?.invalidate()
+        if let recordMonitor {
+            NSEvent.removeMonitor(recordMonitor)
+            self.recordMonitor = nil
+        }
+        isRecordingShortcut = false
         persist()
         NotificationCenter.default.post(name: ConfigStore.didChange, object: nil)
         super.close()
