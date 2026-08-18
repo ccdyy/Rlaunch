@@ -163,14 +163,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func gridConfig() -> GridLayoutConfig {
-        // 全屏时按配置放大列/行间距，避免大屏上显得紧凑
-        let isFullscreen = isPseudoFullScreen
-        let scale = isFullscreen ? CGFloat(config.fullscreenSpacingScale) : 1.0
+        // 全屏时按屏幕尺寸自适应：图标、文字、间距整体放大并铺满屏幕，
+        // 避免大屏全屏时内容缩在中间。
+        if isPseudoFullScreen, let screen = window?.screen ?? NSScreen.main {
+            let W = screen.frame.width
+            let H = screen.frame.height
+            let cols = CGFloat(config.columns)
+            let rows = CGFloat(config.rows)
+            let scale = CGFloat(config.fullscreenSpacingScale)
+            let colSpacing = max(14, CGFloat(config.columnSpacing) * scale)
+            let rowSpacing = max(14, CGFloat(config.rowSpacing) * scale)
+            let labelH: CGFloat = 36 // 估算标签高度（实际按图标大小缩放）
+            // 图标尺寸：宽高双向适配（宽度占 88%、高度占 84%），上限 160
+            let iconForW = (W * 0.88 - (cols - 1) * colSpacing) / cols - 16
+            let iconForH = (H * 0.84 - (rows - 1) * rowSpacing) / rows - labelH - 8
+            let icon = min(160, max(CGFloat(config.iconSize), min(iconForW, iconForH)))
+            return GridLayoutConfig(
+                columns: config.columns,
+                rows: config.rows,
+                columnSpacing: colSpacing,
+                rowSpacing: rowSpacing,
+                iconSize: icon
+            )
+        }
         return GridLayoutConfig(
             columns: config.columns,
             rows: config.rows,
-            columnSpacing: CGFloat(config.columnSpacing) * scale,
-            rowSpacing: CGFloat(config.rowSpacing) * scale,
+            columnSpacing: CGFloat(config.columnSpacing),
+            rowSpacing: CGFloat(config.rowSpacing),
             iconSize: CGFloat(config.iconSize)
         )
     }

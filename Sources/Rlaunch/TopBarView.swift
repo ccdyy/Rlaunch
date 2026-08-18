@@ -142,14 +142,12 @@ final class SearchFieldCell: NSSearchFieldCell {
     }
 
     private func configure() {
-        // 用固定点位的 SF Symbol 替换默认放大镜，避免随控件高度被拉伸
-        let button = searchButtonCell ?? NSButtonCell()
-        button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
-        button.imageScaling = .scaleNone
-        button.isTransparent = true
-        button.isBordered = false
-        searchButtonCell = button
+        // 去掉系统默认放大镜（其图像会随控件高度拉伸），由 drawInterior 自绘
+        if let button = searchButtonCell {
+            button.image = nil
+            button.isTransparent = true
+            button.isBordered = false
+        }
     }
 
     override func searchButtonRect(forBounds rect: NSRect) -> NSRect {
@@ -157,6 +155,16 @@ final class SearchFieldCell: NSSearchFieldCell {
         r.size = NSSize(width: 18, height: 18)
         r.origin.y = rect.midY - 9
         return r
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: cellFrame, in: controlView)
+        // 自绘放大镜：固定 15pt 符号图、等比、不可拉伸
+        guard let image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "搜索")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)) else { return }
+        let rect = searchButtonRect(forBounds: cellFrame).insetBy(dx: 1, dy: 1)
+        NSColor.secondaryLabelColor.set()
+        image.draw(in: rect)
     }
 }
 

@@ -54,14 +54,20 @@ final class AppItemView: NSView, NSDraggingSource {
 
     func update(kind: Kind, config: GridLayoutConfig) {
         self.kind = kind
-        self.config = config
-        label.font = .systemFont(ofSize: max(11, config.iconSize * 0.19))
         if case .folder = kind {
             if registeredDraggedTypes.isEmpty { registerForDraggedTypes([.rlaunchAppPath]) }
         } else {
             unregisterDraggedTypes()
         }
+        applyLayoutConfig(config)
         updateContent()
+        needsLayout = true
+    }
+
+    /// 应用布局参数（图标/文字大小随配置变化，全屏时同步放大）
+    func applyLayoutConfig(_ config: GridLayoutConfig) {
+        self.config = config
+        label.font = .systemFont(ofSize: max(11, config.iconSize * 0.19))
         needsLayout = true
     }
 
@@ -85,10 +91,10 @@ final class AppItemView: NSView, NSDraggingSource {
     override func layout() {
         super.layout()
         let iconSize = config.iconSize
-        let labelH: CGFloat = 30
-        let totalH = iconSize + labelH + 6
+        let labelH = config.labelHeight
+        let totalH = iconSize + labelH + 8
         let y = (bounds.height - totalH) / 2
-        imageView.frame = NSRect(x: (bounds.width - iconSize) / 2, y: y + labelH + 6, width: iconSize, height: iconSize)
+        imageView.frame = NSRect(x: (bounds.width - iconSize) / 2, y: y + labelH + 8, width: iconSize, height: iconSize)
         label.frame = NSRect(x: 2, y: y, width: bounds.width - 4, height: labelH)
     }
 

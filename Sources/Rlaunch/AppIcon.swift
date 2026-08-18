@@ -8,13 +8,30 @@ enum AppIcon {
         return loadPNG("AppIcon-1024")
     }
 
-    /// 菜单栏状态项图标（彩色，非 template）
+    /// 菜单栏状态项图标（彩色，非 template）：显式拼接 @1x/@2x 表示，保证 Retina 清晰
     static var menuBar: NSImage? {
-        guard let image = loadPNG("MenuBarIcon") else { return application }
-        let copy = image.copy() as? NSImage ?? image
-        copy.isTemplate = false
-        copy.size = NSSize(width: 18, height: 18)
-        return copy
+        let image = NSImage(size: NSSize(width: 18, height: 18))
+        var reps = 0
+        if let rep = bitmapRep("MenuBarIcon", points: 18) {
+            image.addRepresentation(rep)
+            reps += 1
+        }
+        if let rep = bitmapRep("MenuBarIcon@2x", points: 18) {
+            image.addRepresentation(rep)
+            reps += 1
+        }
+        guard reps > 0 else { return application }
+        image.isTemplate = false
+        return image
+    }
+
+    private static func bitmapRep(_ name: String, points: CGFloat) -> NSBitmapImageRep? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
+              let data = try? Data(contentsOf: url),
+              let rep = NSBitmapImageRep(data: data) else { return nil }
+        // 以点为单位设置逻辑尺寸：@1x 与 @2x 均表示 18pt，AppKit 自动按像素密度选取
+        rep.size = NSSize(width: points, height: points)
+        return rep
     }
 
     private static func loadPNG(_ name: String) -> NSImage? {

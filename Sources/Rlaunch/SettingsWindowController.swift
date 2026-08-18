@@ -1,5 +1,6 @@
 import Cocoa
 import ApplicationServices
+import ServiceManagement
 import UniformTypeIdentifiers
 import RlaunchCore
 
@@ -72,6 +73,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let axStatusLabel = NSTextField(labelWithString: "辅助功能：未授权")
     private let axButton = NSButton(title: "打开权限设置…", target: nil, action: nil)
     private let trackpadButton = NSButton(title: "触控板手势设置…", target: nil, action: nil)
+    // 开机启动（SMAppService 登录项）
+    private let launchAtLoginSwitch = NSSwitch()
+    private let launchAtLoginLabel = NSTextField(labelWithString: "开机自动启动 Rlaunch")
+    private let launchAtLoginStatus = NSTextField(labelWithString: "")
     private let scanRowsStack = NSStackView()
     private let rescanButton = NSButton(title: "重新扫描应用", target: nil, action: nil)
 
@@ -367,6 +372,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let doneButton = NSButton(title: "完成", target: self, action: #selector(doneClicked))
         doneButton.keyEquivalent = "\r"
         stack.addArrangedSubview(row([rescanButton, doneButton]))
+
+        // 开机启动（SMAppService 登录项）
+        launchAtLoginSwitch.controlSize = .small
+        launchAtLoginSwitch.target = self
+        launchAtLoginSwitch.action = #selector(launchAtLoginChanged)
+        launchAtLoginLabel.font = .systemFont(ofSize: 13)
+        launchAtLoginStatus.font = .systemFont(ofSize: 12)
+        launchAtLoginStatus.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(row([launchAtLoginSwitch, launchAtLoginLabel]))
+        stack.addArrangedSubview(row([launchAtLoginStatus]))
+        let loginHint = NSTextField(wrappingLabelWithString:
+            "开启后 Rlaunch 会在登录时自动启动（可在 系统设置 → 通用 → 登录项与扩展 中管理）。")
+        loginHint.font = .systemFont(ofSize: 11)
+        loginHint.textColor = .secondaryLabelColor
+        loginHint.preferredMaxLayoutWidth = 360
+        stack.addArrangedSubview(loginHint)
     }
 
     /// 切换 Tab：隐藏其他页、滚动回顶部
@@ -414,8 +435,47 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         pinchSwitch.state = config.pinchEnabled ? .on : .off
         pinchSlider.doubleValue = config.pinchThreshold
         pinchValue.stringValue = String(format: "%.2f", config.pinchThreshold)
+        refreshLaunchAtLogin()
         refreshPermissionStatus()
         rebuildScanRows()
+    }
+
+    /// 与系统登录项状态同步（系统设置为准）
+    private func refreshLaunchAtLogin() {
+        let status = SMAppService.mainApp.status
+        switch status {
+        case .enabled:
+            launchAtLoginSwitch.state = .on
+            launchAtLoginStatus.stringValue = "已开启（登录时自动启动）"
+        case .requiresApproval:
+            launchAtLoginSwitch.state = .off
+            launchAtLoginStatus.stringValue = "需要授权：请到 系统设置 → 通用 → 登录项与扩展 中允许"
+        case .notRegistered:
+            launchAtLoginSwitch.state = .off
+            launchAtLoginStatus.stringValue = "未开启"
+        case .notFound:
+            launchAtLoginSwitch.state = .off
+            launchAtLoginStatus.stringValue = "未找到应用副本，请将 Rlaunch 放入「应用程序」文件夹"
+        @unknown default:
+            launchAtLoginSwitch.state = .off
+            launchAtLoginStatus.stringValue = ""
+        }
+        config.launchAtLogin = (status == .enabled)
+    }
+
+    @objc private func launchAtLoginChanged() {
+        let service = SMAppService.mainApp
+        do {
+            if launchAtLoginSwitch.state == .on {
+                try service.register()
+            } else {
+                try service.unregister()
+            }
+        } catch {
+            NSLog("Rlaunch: 开机启动设置失败 %@", error.localizedDescription)
+        }
+        refreshLaunchAtLogin()
+        scheduleSave()
     }
 
     private func refreshPermissionStatus() {
@@ -630,6 +690,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         latest.hotKeyModifiers = config.hotKeyModifiers
         latest.pinchEnabled = config.pinchEnabled
         latest.pinchThreshold = config.pinchThreshold
+        latest.launchAtLogin = config.launchAtLogin
         ConfigStore.save(latest)
     }
 

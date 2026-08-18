@@ -11,8 +11,10 @@ struct GridLayoutConfig {
 
     static let defaults = GridLayoutConfig()
 
+    /// 名称标签高度随图标大小缩放（全屏放大图标时文字同步放大）
+    var labelHeight: CGFloat { min(40, max(26, iconSize * 0.28)) }
     var cellWidth: CGFloat { iconSize + 16 }
-    var cellHeight: CGFloat { iconSize + 40 }
+    var cellHeight: CGFloat { iconSize + labelHeight + 8 }
 }
 
 /// 一页网格：按 columns×rows 居中排布应用/文件夹；空白处点击返回、右键菜单；
@@ -23,7 +25,11 @@ final class GridPageView: NSView {
         didSet { syncViews() }
     }
     var layoutConfig: GridLayoutConfig = .defaults {
-        didSet { needsLayout = true }
+        didSet {
+            // 把新布局参数同步给每个 cell（全屏切换时图标/文字同步放大）
+            for view in cellViews { view.applyLayoutConfig(layoutConfig) }
+            needsLayout = true
+        }
     }
     var onAppClick: ((AppInfo) -> Void)?
     var onFolderClick: ((FolderConfig) -> Void)?
