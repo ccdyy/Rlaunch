@@ -71,6 +71,8 @@ final class PinchMonitor {
             pinLog("捏合监听启用失败（无触控板数据源，且手势事件监听需辅助功能权限）")
         }
         startLocalDiagnostics()
+        startWakeObservers()
+        startHealthCheck()
     }
 
     /// 配置变更时按需应用：运行中只更新阈值（避免反复重启触控板会话）
@@ -89,14 +91,9 @@ final class PinchMonitor {
     func stop() {
         stopMultitouch()
         stopLocalDiagnostics()
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-            runLoopSource = nil
-        }
-        if let tap {
-            CFMachPortInvalidate(tap)
-            self.tap = nil
-        }
+        stopEventTap()
+        stopWakeObservers()
+        stopHealthCheck()
         isRunning = false
         accumulation = 0
         isTracking = false
@@ -106,6 +103,75 @@ final class PinchMonitor {
         fired = false
         spanInitial = 0
         mtLock.unlock()
+    }
+
+    private func stopEventTap() {
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            runLoopSource = nil
+        }
+        if let tap {
+            CFMachPortInvalidate(tap)
+            self.tap = nil
+        }
+    }
+
+    // MARK: - 休眠/唤醒与长时间运行的自愈（event tap 可能被系统禁用）
+
+    private var wakeObservers: [NSObjectProtocol] = []
+    private var healthTimer: Timer?
+
+    private func startWakeObservers() {
+        stopWakeObservers()
+        let c = NSWorkspace.shared.notificationCenter
+        wakeObservers.append(c.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.pinLog("系统唤醒，重新校验捏合监听")
+            self?.revalidateTap()
+        })
+        wakeObservers.append(c.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.revalidateTap()
+        })
+    }
+
+    private func stopWakeObservers() {
+        let c = NSWorkspace.shared.notificationCenter
+        for o in wakeObservers { c.removeObserver(o) }
+        wakeObservers.removeAll()
+    }
+
+    private func startHealthCheck() {
+        stopHealthCheck()
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+            self?.revalidateTap()
+        }
+        timer.tolerance = 10
+        RunLoop.main.add(timer, forMode: .common)
+        healthTimer = timer
+    }
+
+    private func stopHealthCheck() {
+        healthTimer?.invalidate()
+        healthTimer = nil
+    }
+
+    /// 检查 event tap 是否仍可用：被禁用则重新启用，仍无效则整体重建
+    private func revalidateTap() {
+        guard let tap else { return }
+        if !CGEvent.tapIsEnabled(tap: tap) {
+            pinLog("捏合事件监听被系统禁用，尝试重新启用")
+            CGEvent.tapEnable(tap: tap, enable: true)
+            if !CGEvent.tapIsEnabled(tap: tap) {
+                pinLog("重新启用失败，重建捏合事件监听")
+                stopEventTap()
+                if startEventTap() {
+                    isRunning = true
+                }
+            }
+        }
     }
 
     // MARK: - 触发（冷却去重：MT 与事件监听并行时的双触发只算一次）
@@ -358,6 +424,14 @@ final class PinchMonitor {
             callback: { _, type, event, userInfo in
                 guard let userInfo else { return Unmanaged.passUnretained(event) }
                 let monitor = Unmanaged<PinchMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+                // 系统禁用通知（休眠/超时/用户输入打断）：立即重新启用并丢弃该事件
+                if type.rawValue >= 0xFFFFFFF0 {
+                    monitor.pinLog("收到事件监听禁用通知 type=\(type.rawValue)，重新启用")
+                    if let tap = monitor.tap {
+                        CGEvent.tapEnable(tap: tap, enable: true)
+                    }
+                    return nil
+                }
                 monitor.handleTapEvent(type: type, event: event)
                 return Unmanaged.passUnretained(event)
             },

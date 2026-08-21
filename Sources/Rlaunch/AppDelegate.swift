@@ -32,7 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pinch = PinchMonitor()
         pinch.onTrigger = { [weak self] in
             guard let self else { return }
-            if self.mainController.isVisible {
+            if self.mainController.isFrontmost {
                 self.mainController.hide()
             } else {
                 self.mainController.showFullScreen()

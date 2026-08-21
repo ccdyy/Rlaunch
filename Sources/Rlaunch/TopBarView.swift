@@ -242,10 +242,12 @@ final class TopBarView: NSView {
     var onNextPage: (() -> Void)?
     var onSettings: (() -> Void)?
     var onBackToMain: (() -> Void)?
+    var onRefresh: (() -> Void)?
 
     let traffic = TrafficLightsView()
     let searchField = SearchField()
     let pageLabel = PageLabel()
+    let refreshButton = SymbolButton(symbol: "arrow.clockwise")
     let fullscreenButton = SymbolButton(symbol: "arrow.up.left.and.arrow.down.right")
     let settingsButton = SymbolButton(symbol: "gearshape")
     let folderLabel = NSTextField(labelWithString: "")
@@ -276,6 +278,11 @@ final class TopBarView: NSView {
         fullscreenButton.target = self
         fullscreenButton.action = #selector(greenClicked)
         addSubview(fullscreenButton)
+
+        refreshButton.toolTip = "重新扫描应用"
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshClicked)
+        addSubview(refreshButton)
 
         settingsButton.toolTip = "设置"
         settingsButton.target = self
@@ -312,6 +319,7 @@ final class TopBarView: NSView {
     @objc private func greenClicked() { onGreen?() }
     @objc private func settingsClicked() { onSettings?() }
     @objc private func backClicked() { onBackToMain?() }
+    @objc private func refreshClicked() { onRefresh?() }
 
     func setFolderMode(name: String?) {
         if let name {
@@ -352,11 +360,12 @@ final class TopBarView: NSView {
 
         pageLabel.sizeToFit()
         let pageW = max(pageLabel.frame.width, 48)
-        pageLabel.frame = NSRect(x: bounds.width - 18 - 36 - gap - 36 - gap - pageW,
+        pageLabel.frame = NSRect(x: bounds.width - 18 - 36 - gap - 36 - gap - 36 - gap - pageW,
                                  y: (h - pageLabel.frame.height) / 2,
                                  width: pageW, height: pageLabel.frame.height)
 
         settingsButton.frame = NSRect(x: bounds.width - 18 - 36, y: (h - 30) / 2, width: 36, height: 30)
         fullscreenButton.frame = NSRect(x: bounds.width - 18 - 36 - gap - 36, y: (h - 30) / 2, width: 36, height: 30)
+        refreshButton.frame = NSRect(x: bounds.width - 18 - 36 - gap - 36 - gap - 36, y: (h - 30) / 2, width: 36, height: 30)
     }
 }

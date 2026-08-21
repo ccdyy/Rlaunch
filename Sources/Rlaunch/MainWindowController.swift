@@ -119,6 +119,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         topBar.onSettings = { [weak self] in self?.openSettings() }
         topBar.onBackToMain = { [weak self] in self?.backToMain() }
+        topBar.onRefresh = { [weak self] in self?.rescan() }
     }
 
     // MARK: - 扫描
@@ -454,6 +455,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     var isVisible: Bool { window?.isVisible == true }
 
+    /// 窗口是否真正位于前台（可见且为本应用键盘焦点窗口）。
+    /// 被切到后台时窗口只是「沉底」而非隐藏，此时应视为未显示。
+    var isFrontmost: Bool {
+        guard isVisible else { return false }
+        return NSApp.isActive && window?.isKeyWindow == true
+    }
+
     func show() {
         guard let window else { return }
         applyWindowLevel()
@@ -508,8 +516,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         applyGridConfig()                           // 再恢复普通间距并重排页面
     }
 
+    /// 菜单栏/快捷键切换：仅当窗口真正在前台时收起；沉底状态直接唤起，
+    /// 避免「第一次点击隐藏沉底窗口、第二次才显示」的体验问题。
     func toggle() {
-        if window?.isVisible == true { hide() } else { show() }
+        if isFrontmost { hide() } else { show() }
     }
 
     // MARK: - 配置变更
