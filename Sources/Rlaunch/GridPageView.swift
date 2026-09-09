@@ -11,14 +11,12 @@ struct GridLayoutConfig {
 
     static let defaults = GridLayoutConfig()
 
-    /// 名称标签高度随图标大小缩放（全屏放大图标时文字同步放大）
     var labelHeight: CGFloat { min(40, max(26, iconSize * 0.28)) }
-    var cellWidth: CGFloat { iconSize + 16 }
-    var cellHeight: CGFloat { iconSize + labelHeight + 8 }
+    var cellWidth: CGFloat { iconSize + 20 }
+    var cellHeight: CGFloat { iconSize + labelHeight + 16 }
 }
 
-/// 一页网格：按 columns×rows 居中排布应用/文件夹；空白处点击返回、右键菜单；
-/// 空白处作为拖放目标（文件夹模式下把应用拖到空白 = 移出文件夹）。
+/// 一页网格：按 columns×rows 居中排布应用/文件夹；支持长按多选、空白处点击返回、右键菜单。
 final class GridPageView: NSView {
 
     var items: [GridItem] = [] {
@@ -26,17 +24,26 @@ final class GridPageView: NSView {
     }
     var layoutConfig: GridLayoutConfig = .defaults {
         didSet {
-            // 把新布局参数同步给每个 cell（全屏切换时图标/文字同步放大）
             for view in cellViews { view.applyLayoutConfig(layoutConfig) }
             needsLayout = true
         }
     }
+
+    var isSelectionMode: Bool = false {
+        didSet { syncSelectionState() }
+    }
+    var selectedAppPaths: Set<String> = [] {
+        didSet { syncSelectionState() }
+    }
+
     var onAppClick: ((AppInfo) -> Void)?
     var onFolderClick: ((FolderConfig) -> Void)?
     var onBlankClick: (() -> Void)?
     var onDropAppToBlank: ((String) -> Void)?
     var onDropAppToFolder: ((String, FolderConfig) -> Void)?
     var onContextMenu: ((GridItem?) -> NSMenu?)?
+    var onLongPressItem: ((GridItem) -> Void)?
+    var onToggleSelectItem: ((GridItem) -> Void)?
 
     private var cellViews: [AppItemView] = []
 
@@ -46,8 +53,6 @@ final class GridPageView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
-
-    // MARK: 视图同步（复用 cell，避免重建）
 
     private func syncViews() {
         while cellViews.count < items.count {
@@ -63,6 +68,12 @@ final class GridPageView: NSView {
                 self.onDropAppToFolder?(path, folder)
             }
             view.onContextMenu = { [weak self] kind in self?.onContextMenu?(self?.kindFor(itemView: kind)) }
+            view.onLongPress = { [weak self] kind in
+                if let item = self?.kindFor(itemView: kind) { self?.onLongPressItem?(item) }
+            }
+            view.onToggleSelect = { [weak self] kind in
+                if let item = self?.kindFor(itemView: kind) { self?.onToggleSelectItem?(item) }
+            }
             cellViews.append(view)
             addSubview(view)
         }
@@ -70,9 +81,19 @@ final class GridPageView: NSView {
             cellViews.removeLast().removeFromSuperview()
         }
         for (i, item) in items.enumerated() {
-            cellViews[i].update(kind: kindFor(item: item), config: layoutConfig)
+            let selected = item.appPath.map { selectedAppPaths.contains($0) } ?? false
+            cellViews[i].update(kind: kindFor(item: item), config: layoutConfig,
+                                isSelectionMode: isSelectionMode, isItemSelected: selected)
         }
         needsLayout = true
+    }
+
+    private func syncSelectionState() {
+        for (i, item) in items.enumerated() where i < cellViews.count {
+            let selected = item.appPath.map { selectedAppPaths.contains($0) } ?? false
+            cellViews[i].isSelectionMode = isSelectionMode
+            cellViews[i].isItemSelected = selected
+        }
     }
 
     private func kindFor(item: GridItem) -> AppItemView.Kind {
@@ -88,8 +109,6 @@ final class GridPageView: NSView {
         case .folder(let folder): return .folder(folder)
         }
     }
-
-    // MARK: 布局
 
     override func layout() {
         super.layout()
@@ -113,8 +132,6 @@ final class GridPageView: NSView {
         }
     }
 
-    // MARK: 空白点击 / 右键
-
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
@@ -126,8 +143,6 @@ final class GridPageView: NSView {
             menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
         }
     }
-
-    // MARK: 空白拖放目标（文件夹模式：移出文件夹）
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         sender.draggingPasteboard.string(forType: .rlaunchAppPath) != nil ? .copy : []

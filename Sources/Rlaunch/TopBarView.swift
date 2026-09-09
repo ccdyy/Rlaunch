@@ -9,15 +9,22 @@ final class TrafficLightsView: NSView {
     var onYellow: (() -> Void)?
     var onGreen: (() -> Void)?
 
-    private let redDot = DotButton(color: NSColor(red: 1.0, green: 0.373, blue: 0.341, alpha: 1.0), glyph: "xmark")
-    private let yellowDot = DotButton(color: NSColor(red: 0.996, green: 0.745, blue: 0.18, alpha: 1.0), glyph: "minus")
-    private let greenDot = DotButton(color: NSColor(red: 0.157, green: 0.784, blue: 0.251, alpha: 1.0), glyph: "arrow.up.left.and.arrow.down.right")
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    private let redDot = TrafficDotButton(color: NSColor(red: 1.0, green: 0.373, blue: 0.341, alpha: 1.0), glyph: "xmark")
+    private let yellowDot = TrafficDotButton(color: NSColor(red: 0.996, green: 0.745, blue: 0.18, alpha: 1.0), glyph: "minus")
+    private let greenDot = TrafficDotButton(color: NSColor(red: 0.157, green: 0.784, blue: 0.251, alpha: 1.0), glyph: "arrow.up.left.and.arrow.down.right")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        redDot.onClick = { [weak self] in self?.onRed?() }
-        yellowDot.onClick = { [weak self] in self?.onYellow?() }
-        greenDot.onClick = { [weak self] in self?.onGreen?() }
+        redDot.target = self
+        redDot.action = #selector(redClicked)
+        yellowDot.target = self
+        yellowDot.action = #selector(yellowClicked)
+        greenDot.target = self
+        greenDot.action = #selector(greenClicked)
+
         for d in [redDot, yellowDot, greenDot] {
             addSubview(d)
         }
@@ -25,15 +32,24 @@ final class TrafficLightsView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    @objc private func redClicked() { onRed?() }
+    @objc private func yellowClicked() { onYellow?() }
+    @objc private func greenClicked() { onGreen?() }
+
+    override func mouseDown(with event: NSEvent) {
+        // 阻止点击空白缝隙处冒泡导致窗口误拖动
+    }
+
     override func layout() {
         super.layout()
-        let size: CGFloat = 12
-        let gap: CGFloat = 8
-        let y = (bounds.height - size) / 2
+        let btnW: CGFloat = 18
+        let btnH: CGFloat = 28
+        let gap: CGFloat = 4
+        let y = (bounds.height - btnH) / 2
         var x: CGFloat = 0
         for d in [redDot, yellowDot, greenDot] {
-            d.frame = NSRect(x: x, y: y, width: size, height: size)
-            x += size + gap
+            d.frame = NSRect(x: x, y: y, width: btnW, height: btnH)
+            x += btnW + gap
         }
     }
 
@@ -42,7 +58,7 @@ final class TrafficLightsView: NSView {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(
-            rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+            rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -54,50 +70,62 @@ final class TrafficLightsView: NSView {
     }
 }
 
-private final class DotButton: NSView {
-    var onClick: (() -> Void)?
-    var showsGlyph = false {
-        didSet { if showsGlyph != oldValue { needsDisplay = true } }
-    }
+private final class TrafficDotButton: NSButton {
     private var hovered = false {
         didSet { if hovered != oldValue { needsDisplay = true } }
     }
+    var showsGlyph = false {
+        didSet { if showsGlyph != oldValue { needsDisplay = true } }
+    }
     private let baseColor: NSColor
     private let glyph: String
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     init(color: NSColor, glyph: String) {
         self.baseColor = color
         self.glyph = glyph
         super.init(frame: .zero)
+        isBordered = false
+        title = ""
+        image = nil
+        focusRingType = .none
+        setButtonType(.momentaryChange)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
-        // 悬停时颜色加深
-        let color = hovered ? (baseColor.blended(withFraction: 0.3, of: .black) ?? baseColor) : baseColor
+        let dotSize: CGFloat = 12
+        let dotRect = NSRect(
+            x: (bounds.width - dotSize) / 2,
+            y: (bounds.height - dotSize) / 2,
+            width: dotSize,
+            height: dotSize
+        )
+        let isDown = cell?.isHighlighted == true
+        let color = isDown
+            ? (baseColor.blended(withFraction: 0.35, of: .black) ?? baseColor)
+            : (hovered ? (baseColor.blended(withFraction: 0.2, of: .black) ?? baseColor) : baseColor)
         color.setFill()
-        NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5)).fill()
+        NSBezierPath(ovalIn: dotRect.insetBy(dx: 0.5, dy: 0.5)).fill()
 
         if showsGlyph, let symbol = NSImage(systemSymbolName: glyph, accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)) {
-            let tinted = symbol.tinted(with: NSColor.black.withAlphaComponent(0.62))
+            let tinted = symbol.tinted(with: NSColor.black.withAlphaComponent(0.65))
             let size = tinted.size
-            tinted.draw(in: NSRect(x: (bounds.width - size.width) / 2,
-                                   y: (bounds.height - size.height) / 2,
+            tinted.draw(in: NSRect(x: dotRect.minX + (dotSize - size.width) / 2,
+                                   y: dotRect.minY + (dotSize - size.height) / 2,
                                    width: size.width, height: size.height))
         }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onClick?()
     }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(
-            rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+            rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -346,7 +374,7 @@ final class TopBarView: NSView {
         let h = bounds.height
         let gap: CGFloat = 10
 
-        traffic.frame = NSRect(x: 18, y: 0, width: 12 * 3 + 8 * 2, height: h)
+        traffic.frame = NSRect(x: 16, y: 0, width: 62, height: h)
 
         if !folderLabel.isHidden {
             let size = folderLabel.sizeThatFits(NSSize(width: 220, height: h))

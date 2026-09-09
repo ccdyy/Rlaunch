@@ -124,6 +124,33 @@ func testConfigStore() throws {
     check(hotLoaded.hotKeyEnabled && hotLoaded.hotKeyKeyCode == 49 && hotLoaded.hotKeyModifiers == 256,
           "快捷键字段往返一致")
     check(hotLoaded.pinchEnabled == false && hotLoaded.pinchThreshold == 1.2, "捏合字段往返一致")
+
+    // 自定义排序 itemOrder 与分页 pageOrders 往返
+    var orderCfg = cfg
+    orderCfg.itemOrder = ["folder:f1", "app:/Applications/Safari.app", "app:/Applications/Terminal.app"]
+    orderCfg.pageOrders = [
+        ["folder:f1", "app:/Applications/Safari.app"],
+        ["app:/Applications/Terminal.app"]
+    ]
+    check(ConfigStore.save(orderCfg), "保存自定义排序与分页配置")
+    let orderLoaded = ConfigStore.load()
+    check(orderLoaded.itemOrder == ["folder:f1", "app:/Applications/Safari.app", "app:/Applications/Terminal.app"],
+          "自定义排序 itemOrder 往返一致")
+    check(orderLoaded.pageOrders == [
+        ["folder:f1", "app:/Applications/Safari.app"],
+        ["app:/Applications/Terminal.app"]
+    ], "独立分页 pageOrders 往返一致（支持页面空间空置与独立）")
+
+    // 兼容旧版 pageOrders 直接存应用路径（无 app: 前缀）
+    var legacyOrderCfg = cfg
+    legacyOrderCfg.pageOrders = [
+        ["/Applications/Safari.app", "/Applications/Terminal.app"]
+    ]
+    check(ConfigStore.save(legacyOrderCfg), "保存旧版路径格式 pageOrders")
+    let legacyLoaded = ConfigStore.load()
+    check(legacyLoaded.pageOrders.first?.first == "/Applications/Safari.app",
+          "旧版路径格式 pageOrders 可正常读写")
+
     check(ConfigStore.save(cfg), "恢复默认配置")
 
     // 迁移分支 1：旧默认扫描目录 → 自动补上 /System/Applications

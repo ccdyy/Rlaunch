@@ -77,6 +77,10 @@ public struct AppConfig: Codable, Equatable {
     // 行为
     public var hideOnLaunch: Bool = true         // 启动应用后收起界面
     public var launchAtLogin: Bool = false       // 开机自动启动（SMAppService 登录项）
+    // 自定义排序（存储 GridItem 的唯一键，如 "app:<path>" 或 "folder:<id>"）
+    public var itemOrder: [String] = []
+    // 分页排序（每页独立存储 GridItem 的唯一键，支持页面空间空置与跨页独立）
+    public var pageOrders: [[String]] = []
 
     /// macOS 26 系统应用位于 /System/Applications（Launchpad 也会展示它们）。
     /// 用户目录用 ~ 形式存储（不暴露用户名，便于开源分享配置）。
@@ -122,6 +126,8 @@ public struct AppConfig: Codable, Equatable {
         windowHeight = try c.decodeIfPresent(Double.self, forKey: .windowHeight) ?? 700
         hideOnLaunch = try c.decodeIfPresent(Bool.self, forKey: .hideOnLaunch) ?? true
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        itemOrder = try c.decodeIfPresent([String].self, forKey: .itemOrder) ?? []
+        pageOrders = try c.decodeIfPresent([[String]].self, forKey: .pageOrders) ?? []
     }
 
     public func appPathsInAllFolders() -> Set<String> {
