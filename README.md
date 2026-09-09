@@ -3,7 +3,9 @@
 macOS 26 起系统移除了 Launchpad，Rlaunch 是它的 AppKit 平替：无边框圆角窗口、模糊/图片背景、网格分页、吸附滚动、文件夹归类、搜索、设置齐全，注重 CPU 与内存占用平衡。
 
 # 效果图
-![效果图](./Images/screenshot.png)
+![效果图](./Images/screenshot/1.png)
+![效果图](./Images/screenshot/2.png)
+![效果图](./Images/screenshot/3.png)
 
 ## 功能
 
