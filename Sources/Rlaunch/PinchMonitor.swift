@@ -229,7 +229,7 @@ final class PinchMonitor {
               let unregisterSym = dlsym(handle, "MTUnregisterContactFrameCallback"),
               let unregisterFullSym = dlsym(handle, "MTUnregisterFullFrameCallback"),
               let startSym = dlsym(handle, "MTDeviceStart"),
-              let stopSym = dlsym(handle, "MTDeviceStop"),
+              dlsym(handle, "MTDeviceStop") != nil,
               let isRunningSym = dlsym(handle, "MTDeviceIsRunning") else {
             pinLog("MultitouchSupport 符号缺失")
             return false
@@ -240,7 +240,6 @@ final class PinchMonitor {
         let unregister = unsafeBitCast(unregisterSym, to: (@convention(c) (OpaquePointer?, MTFrameCallback) -> Void).self)
         let unregisterFull = unsafeBitCast(unregisterFullSym, to: (@convention(c) (OpaquePointer?, MTFrameCallback) -> Void).self)
         let startDevice = unsafeBitCast(startSym, to: (@convention(c) (OpaquePointer?, Int32) -> OSStatus).self)
-        let stopDevice = unsafeBitCast(stopSym, to: (@convention(c) (OpaquePointer?) -> Void).self)
         let deviceIsRunning = unsafeBitCast(isRunningSym, to: (@convention(c) (OpaquePointer?) -> Bool).self)
 
         guard let listPtr = createList() else {
