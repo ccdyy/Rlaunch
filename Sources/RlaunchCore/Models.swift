@@ -16,15 +16,102 @@ public struct AppInfo: Equatable, Hashable {
 
 // MARK: - 文件夹（目录）配置
 
-public struct FolderConfig: Codable, Equatable {
+public struct FolderConfig: Codable, Equatable, Hashable {
     public var id: String
     public var name: String
     public var appPaths: [String]
+    public var spanColumns: Int
+    public var spanRows: Int
 
-    public init(id: String, name: String, appPaths: [String]) {
+    /// 占用网格单元总数 N
+    public var gridCellCount: Int {
+        max(1, spanColumns) * max(1, spanRows)
+    }
+
+    public init(
+        id: String,
+        name: String = "文件夹",
+        appPaths: [String] = [],
+        spanColumns: Int = 1,
+        spanRows: Int = 1
+    ) {
         self.id = id
-        self.name = name
+        self.name = name.isEmpty ? "文件夹" : name
         self.appPaths = appPaths
+        self.spanColumns = max(1, spanColumns)
+        self.spanRows = max(1, spanRows)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, appPaths, spanColumns, spanRows
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "文件夹"
+        appPaths = try c.decodeIfPresent([String].self, forKey: .appPaths) ?? []
+        spanColumns = max(1, try c.decodeIfPresent(Int.self, forKey: .spanColumns) ?? 1)
+        spanRows = max(1, try c.decodeIfPresent(Int.self, forKey: .spanRows) ?? 1)
+    }
+}
+
+// MARK: - 网格单元：应用 或 文件夹
+
+public enum GridItem: Equatable, Hashable {
+    case app(AppInfo)
+    case folder(FolderConfig)
+
+    public var identifier: String {
+        switch self {
+        case .app(let info): return "app:\(info.path)"
+        case .folder(let folder): return "folder:\(folder.id)"
+        }
+    }
+
+    public var appPath: String? {
+        if case .app(let info) = self { return info.path }
+        return nil
+    }
+
+    public var folderID: String? {
+        if case .folder(let folder) = self { return folder.id }
+        return nil
+    }
+
+    public var displayName: String {
+        switch self {
+        case .app(let info): return info.name
+        case .folder(let folder): return folder.name
+        }
+    }
+
+    public var isFolder: Bool {
+        if case .folder = self { return true }
+        return false
+    }
+
+    public var isApp: Bool {
+        if case .app = self { return true }
+        return false
+    }
+
+    public var spanColumns: Int {
+        switch self {
+        case .app: return 1
+        case .folder(let folder): return max(1, folder.spanColumns)
+        }
+    }
+
+    public var spanRows: Int {
+        switch self {
+        case .app: return 1
+        case .folder(let folder): return max(1, folder.spanRows)
+        }
+    }
+
+    public var gridCellCount: Int {
+        spanColumns * spanRows
     }
 }
 

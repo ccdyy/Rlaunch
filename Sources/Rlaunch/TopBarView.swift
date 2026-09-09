@@ -362,11 +362,52 @@ final class TopBarView: NSView {
         pageLabel.stringValue = "\(page + 1) / \(max(total, 1))"
     }
 
+    private(set) var isFullscreen: Bool = false
+    private var dragStartLoc: NSPoint?
+    private var longPressTimer: Timer?
+    private var isDraggingWindow = false
+
     func setFullscreen(_ isFullscreen: Bool) {
+        self.isFullscreen = isFullscreen
         fullscreenButton.image = NSImage(
             systemSymbolName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
             accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium))
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !isFullscreen, window != nil else { return }
+        dragStartLoc = event.locationInWindow
+        isDraggingWindow = false
+        longPressTimer?.invalidate()
+
+        let timer = Timer(timeInterval: 0.22, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.isDraggingWindow = true
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        longPressTimer = timer
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !isFullscreen, let window = self.window, let start = dragStartLoc else { return }
+        let current = event.locationInWindow
+        if isDraggingWindow || hypot(current.x - start.x, current.y - start.y) > 6 {
+            longPressTimer?.invalidate()
+            longPressTimer = nil
+            isDraggingWindow = false
+            dragStartLoc = nil
+            window.performDrag(with: event)
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        longPressTimer?.invalidate()
+        longPressTimer = nil
+        isDraggingWindow = false
+        dragStartLoc = nil
     }
 
     override func layout() {

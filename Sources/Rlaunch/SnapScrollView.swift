@@ -23,6 +23,7 @@ final class SnapScrollView: NSScrollView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         drawsBackground = false
+        borderType = .noBorder
         horizontalScrollElasticity = .allowed
         verticalScrollElasticity = .none
         hasVerticalScroller = false
