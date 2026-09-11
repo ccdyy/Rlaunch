@@ -166,6 +166,22 @@ func testConfigStore() throws {
 
     check(ConfigStore.save(cfg), "恢复默认配置")
 
+    // 隐藏应用：往返 + 过滤 + 旧配置容错
+    var hideCfg = cfg
+    hideCfg.hiddenAppPaths = ["/Applications/Junk.app"]
+    check(ConfigStore.save(hideCfg), "保存隐藏应用配置")
+    let hideLoaded = ConfigStore.load()
+    check(hideLoaded.hiddenAppPaths == ["/Applications/Junk.app"], "隐藏应用列表往返一致")
+    let scanned = [
+        AppInfo(name: "Junk", path: "/Applications/Junk.app", bundleID: "com.test.junk"),
+        AppInfo(name: "Keep", path: "/Applications/Keep.app", bundleID: "com.test.keep"),
+    ]
+    check(hideLoaded.visibleApps(from: scanned).map(\.name) == ["Keep"], "隐藏的应用不出现在可见列表中")
+    check(hideLoaded.isHidden(appPath: "/Applications/Junk.app"), "隐藏状态查询正确")
+    check(AppConfig.defaults.visibleApps(from: scanned).count == 2, "未配置隐藏时返回全部应用")
+
+    check(ConfigStore.save(cfg), "恢复默认配置")
+
     // 迁移分支 1：旧默认扫描目录 → 自动补上 /System/Applications
     var legacy = cfg
     legacy.scanPaths = ["/Applications",
@@ -198,6 +214,7 @@ func testConfigStore() throws {
         check(decoded.hotKeyKeyCode == nil && decoded.hotKeyEnabled == false, "旧配置默认无快捷键")
         check(decoded.windowX == nil && decoded.windowY == nil,
               "旧配置无窗口位置时保持 nil（首启居中）")
+        check(decoded.hiddenAppPaths.isEmpty, "旧配置无隐藏列表时默认为空")
     } else {
         check(false, "旧格式配置可正常解码（缺新字段不崩溃）")
     }
@@ -248,124 +265,136 @@ func testFolderAndGridItem() throws {
     check(itemFolder.spanColumns == 2 && itemFolder.spanRows == 2, "文件夹跨度获取正确 (2x2)")
     check(itemFolder.gridCellCount == 4, "文件夹网格占用总数正确")
 
-    // 模拟解散释放与空页回收
-    var pageOrders = [
-        ["folder:f_big", "app:/Applications/A.app"],
-        ["app:/Applications/B.app"]
-    ]
-    let releasedApps = ["/Applications/C.app", "/Applications/D.app"]
-    // 移除文件夹
-    pageOrders[0].removeAll { $0 == "folder:f_big" }
-    // 从当前页 (page 0) 释放，假设 perPage = 2
-    let perPage = 2
-    var curP = 0
-    for app in releasedApps {
-        while curP < pageOrders.count && pageOrders[curP].count >= perPage {
-            curP += 1
-        }
-        if curP >= pageOrders.count {
-            pageOrders.append([])
-        }
-        pageOrders[curP].append("app:\(app)")
-    }
-    check(pageOrders.count >= 2, "解散后应用放入当前页与后续页")
-
-    // 空页压缩
-    let emptyPages = [["app:/A.app"], [], ["app:/B.app"], []]
-    let compacted = emptyPages.filter { !$0.isEmpty }
-    check(compacted.count == 2, "全部移动走的空页被成功回收释放")
-
-    // 校验文件夹跨页移动
-    var movePages = [
-        ["folder:f_test", "app:/A.app"],
-        ["app:/B.app"]
-    ]
-    let movingFolder = "folder:f_test"
-    // 从第一页移除并放入第二页
-    for i in 0..<movePages.count {
-        movePages[i].removeAll { $0 == movingFolder }
-    }
-    movePages[1].append(movingFolder)
-    check(!movePages[0].contains("folder:f_test"), "文件夹已从原页面移出")
-    check(movePages[1].contains("folder:f_test"), "文件夹成功放置到目标页面")
-
-    // 校验文件夹与内部应用互斥逻辑
-    let folderA = FolderConfig(id: "f_work", name: "办公", appPaths: ["/A.app", "/B.app"])
-    var selected: [GridItem] = [.app(AppInfo(name: "A", path: "/A.app", bundleID: "com.test.a"))]
-    // 用户接着长按选中了文件夹 folderA：互斥剔除内部 App
-    let internalIds = Set(folderA.appPaths.map { "app:\($0)" })
-    selected.removeAll { internalIds.contains($0.identifier) || $0.isApp }
-    selected.append(.folder(folderA))
-    check(selected.count == 1 && selected.first?.isFolder == true, "选中文件夹时自动互斥移除其内部应用")
-
-    // 反向互斥：当前选中了文件夹，接着选中其内部应用 -> 互斥移除文件夹
-    selected.removeAll { $0.isFolder }
-    selected.append(.app(AppInfo(name: "A", path: "/A.app", bundleID: "com.test.a")))
-    check(selected.count == 1 && selected.first?.isApp == true, "选中内部应用时自动互斥移除文件夹")
-
-    // 校验新建文件夹不会被重复追加到最后一页
-    var pagesBeforeCreate = [
-        ["app:/A.app", "app:/B.app"],
-        ["app:/C.app"]
-    ]
-    let newlyCreatedFolder = FolderConfig(id: "f_new", name: "新文件夹", appPaths: ["/A.app", "/B.app"])
-    // 移除放入文件夹的 App
-    let newFolderAppIds = Set(newlyCreatedFolder.appPaths.map { "app:\($0)" })
-    for i in 0..<pagesBeforeCreate.count {
-        pagesBeforeCreate[i].removeAll { newFolderAppIds.contains($0) }
-    }
-    // 放入当前页 (page 0)
-    pagesBeforeCreate[0].append("folder:\(newlyCreatedFolder.id)")
-    let allFolderInstances = pagesBeforeCreate.flatMap { $0 }.filter { $0 == "folder:\(newlyCreatedFolder.id)" }
-    check(allFolderInstances.count == 1, "新建的文件夹在各页面中仅出现 1 次，不重复出现在末尾")
-
-    // 校验中转站最多 10 项限制与拦截逻辑
+    // 中转站上限（纯逻辑常量，行为由 SelectionTrayView 保证）
     let maxLimit = 10
-    var testItems: [GridItem] = (1...10).map {
+    let testItems: [GridItem] = (1...10).map {
         .app(AppInfo(name: "App\($0)", path: "/Applications/App\($0).app", bundleID: "com.test.\($0)"))
     }
-    check(testItems.count == maxLimit, "中转站已达到 10 个满额")
-    let eleventhItem = GridItem.app(AppInfo(name: "App11", path: "/Applications/App11.app", bundleID: "com.test.11"))
-    var didBlockEleventh = false
-    if testItems.count >= maxLimit {
-        didBlockEleventh = true
-    } else {
-        testItems.append(eleventhItem)
-    }
-    check(didBlockEleventh && testItems.count == 10, "超过 10 个条目时拦截添加并保持上限 10 个")
+    check(testItems.count == maxLimit, "中转站上限为 10 项")
+}
 
-    // 校验长按多选后拖动重排序（无论文件夹还是应用，严格按照选中先后顺序插入到指定位置）
-    var reorderTestPage = ["app:/A.app", "app:/B.app", "folder:f1", "app:/C.app", "folder:f2"]
-    // 用户先选中 folder:f2，再选中 app:/B.app
-    let selectedOrder = ["folder:f2", "app:/B.app"]
-    let selectedSet = Set(selectedOrder)
-    let targetInsertIdx = 0 // 拖动到位置 0（即 app:/A.app 之前）
-    let ref = (targetInsertIdx < reorderTestPage.count) ? reorderTestPage[targetInsertIdx] : nil
-    reorderTestPage.removeAll { selectedSet.contains($0) }
-    let finalInsertIdx: Int
-    if let r = ref, let found = reorderTestPage.firstIndex(of: r) {
-        finalInsertIdx = found
-    } else {
-        finalInsertIdx = min(targetInsertIdx, reorderTestPage.count)
-    }
-    reorderTestPage.insert(contentsOf: selectedOrder, at: finalInsertIdx)
-    check(reorderTestPage == ["folder:f2", "app:/B.app", "app:/A.app", "folder:f1", "app:/C.app"], "无论文件夹还是应用，拖动重排严格遵循选中的先后顺序")
+// MARK: - 网格装箱（真实生产实现）
 
-    // 校验批量 App 拖入文件夹逻辑（去重、成功加入文件夹、并从原页面移除）
-    var targetFolder = FolderConfig(id: "f_target", name: "目标文件夹", appPaths: ["/A.app"])
-    let appsToDrop = ["/B.app", "/C.app", "/A.app"] // 包含一个已存在的 /A.app
-    var sourcePage = ["app:/B.app", "app:/C.app", "app:/D.app", "folder:f_target"]
-    let dropSet = Set(appsToDrop)
-    for p in appsToDrop where !targetFolder.appPaths.contains(p) {
-        targetFolder.appPaths.append(p)
+private func makeApps(_ count: Int) -> [GridItem] {
+    (0..<count).map { i in
+        .app(AppInfo(name: "App\(i)", path: "/Applications/App\(i).app", bundleID: "com.test.\(i)"))
     }
-    sourcePage.removeAll { itemKey in
-        guard itemKey.hasPrefix("app:") else { return false }
-        let path = String(itemKey.dropFirst(4))
-        return dropSet.contains(path)
-    }
-    check(targetFolder.appPaths == ["/A.app", "/B.app", "/C.app"], "批量 App 拖入文件夹成功且自动去重")
-    check(sourcePage == ["app:/D.app", "folder:f_target"], "拖入文件夹的 App 已从原页面移除")
+}
+
+private func makeFolder(_ id: String, cols: Int, rows: Int) -> GridItem {
+    .folder(FolderConfig(id: id, name: id, appPaths: ["/in.app"], spanColumns: cols, spanRows: rows))
+}
+
+func testGridPacker() {
+    print("GridPacker:")
+
+    let five = makeApps(5)
+    let basic = GridPacker.placements(for: five, columns: 3, rows: 2)
+    check(basic.compactMap { $0 }.count == 5, "3×2 网格可放下 5 个应用")
+    check(basic[3] == GridPosition(row: 1, column: 0), "第 4 个应用换行到第 2 行首列")
+    check(basic[5 - 1] == GridPosition(row: 1, column: 1), "第 5 个应用落在第 2 行第 2 列")
+
+    // 2×2 文件夹：占位后剩余位置不足以再放一个 1×1
+    let mixed = [five[0], makeFolder("f_big", cols: 2, rows: 2), five[1], five[2]]
+    let placed = GridPacker.placements(for: mixed, columns: 3, rows: 2)
+    check(placed[1] == GridPosition(row: 0, column: 1), "2×2 文件夹从首个可用位置开始占位")
+    check(placed[2] == GridPosition(row: 1, column: 0), "文件夹占位后 1×1 继续填充剩余格")
+    check(placed[3] == nil, "剩余格数不足以放置时返回 nil（调用方应换页）")
+    check(GridPacker.fitCount(for: mixed, columns: 3, rows: 2) == 3,
+          "3×2 网格放「2 应用 + 1 个 2×2 文件夹 + 1 应用」时只能放下 3 个条目")
+
+    // 超规格文件夹会被裁剪到网格范围内，不会导致死循环
+    let oversized = [makeFolder("f_huge", cols: 5, rows: 5)]
+    check(GridPacker.fitCount(for: oversized, columns: 2, rows: 2) == 1, "超出网格的文件夹被裁剪后仍可放下")
+
+    // 键盘导航：3 列网格下的邻居查找
+    let nine = makeApps(9)
+    let grid = GridPacker.placements(for: nine, columns: 3, rows: 3)
+    check(GridPacker.neighborIndex(from: 0, dx: 1, dy: 0, placements: grid) == 1, "→ 移动到同行右侧条目")
+    check(GridPacker.neighborIndex(from: 1, dx: 0, dy: 1, placements: grid) == 4, "↓ 移动到同一列的下方条目")
+    check(GridPacker.neighborIndex(from: 4, dx: 0, dy: -1, placements: grid) == 1, "↑ 回到同一列的上方条目")
+    check(GridPacker.neighborIndex(from: 2, dx: 1, dy: 0, placements: grid) == nil, "最右侧再向右无邻居（由调用方翻页）")
+    check(GridPacker.neighborIndex(from: 0, dx: -1, dy: 0, placements: grid) == nil, "最左侧再向左无邻居")
+
+    // 有空洞的网格：↓ 在下方无条目时不应越行乱跳
+    let holed = [makeApps(1)[0], makeFolder("f_hole", cols: 1, rows: 2), makeApps(4)[3]]
+    let holedGrid = GridPacker.placements(for: holed, columns: 2, rows: 3)
+    check(holedGrid[1] == GridPosition(row: 0, column: 1), "1×2 文件夹占位正确")
+    check(GridPacker.neighborIndex(from: 0, dx: 0, dy: 1, placements: holedGrid) == 2,
+          "↓ 跳过被文件夹占满的列，落到下一行可用条目")
+}
+
+// MARK: - 分页编排（真实生产实现）
+
+func testPageComposer() {
+    print("PageComposer:")
+
+    let apps = makeApps(6)
+    let bigFolder = makeFolder("f_big", cols: 2, rows: 2)
+
+    // 关键回归：分页必须按「实际格数」切分，否则跨格文件夹会挤掉后续条目并被静默隐藏
+    let mixed = [apps[0], bigFolder, apps[1], apps[2], apps[3]]
+    let chunked = PageComposer.chunk(mixed, columns: 3, rows: 2)
+    check(chunked.count == 2, "跨格文件夹导致容量下降时会自动分页")
+    check(chunked[0].count == 3 && chunked[1].count == 2, "每页条目数严格等于该页实际可放置数")
+    check(chunked.flatMap { $0 }.map { $0.identifier } == mixed.map { $0.identifier },
+          "分页后不丢失任何条目且保持原有顺序")
+
+    // 常规切页
+    let plain = PageComposer.chunk(makeApps(7), columns: 3, rows: 2)
+    check(plain.map { $0.count } == [6, 1], "1×1 条目按 columns×rows 满页切分")
+
+    // 未登记条目补充进最后一页空位
+    let composed = PageComposer.compose(
+        savedPages: [[apps[0], apps[1]]], unvisited: [apps[2], apps[3]],
+        columns: 3, rows: 1)
+    check(composed.count == 2 && composed[0].count == 3 && composed[1].count == 1,
+          "未登记条目优先补进最后一页空位，其余另起新页")
+
+    // 刻意留白的中间页保留，末尾空页回收
+    let withBlank = PageComposer.compose(
+        savedPages: [[apps[0]], [], [apps[1]]], unvisited: [], columns: 2, rows: 2)
+    check(withBlank.count == 3 && withBlank[1].isEmpty, "用户刻意留白的中间页被保留")
+
+    let trailingBlank = PageComposer.compose(
+        savedPages: [[apps[0]], []], unvisited: [], columns: 2, rows: 2)
+    check(trailingBlank.count == 1, "末尾空页被回收")
+
+    check(PageComposer.compact([["a"], [], ["b"], []]) == [["a"], ["b"]], "空页回收保留顺序")
+    check(PageComposer.compact([[], []]) == [[]], "全部为空时至少保留一页")
+    check(PageComposer.compact([["a"]]) == [["a"]], "单页不做回收处理")
+
+    // 移除：只剔除指定条目，保留页面结构
+    let removed = PageComposer.removing(["app:/Applications/App0.app"], from: [[apps[0], apps[1]], [apps[2]]])
+    check(removed == [[apps[1]], [apps[2]]], "按标识符批量剔除条目")
+
+    // 拖动重排：严格保持传入顺序，并按参考物定位插入点
+    let reordered = PageComposer.move([apps[2], apps[1]], toPage: 0, at: 0, in: [[apps[0], apps[1], apps[2]]],
+                                      columns: 3, rows: 1)
+    check(reordered[0].map { $0.identifier } == [apps[2], apps[1], apps[0]].map { $0.identifier },
+          "拖动重排严格遵循选中先后顺序并插入参考物之前")
+
+    // 跨格文件夹放不下时顺延到下一页，而不是被静默隐藏
+    let reflowed = PageComposer.move([bigFolder], toPage: 0, at: 3, in: [[apps[0], apps[1], apps[2]]],
+                                     columns: 3, rows: 2)
+    check(reflowed.count == 2 && reflowed[1] == [bigFolder],
+          "目标页放不下的跨格文件夹顺延到下一页")
+
+    // 解散文件夹：从当前页开始释放，放不下自动新建页
+    let released = PageComposer.release([apps[3], apps[4]], fromPage: 0,
+                                        in: [[apps[0], apps[1], apps[2]]], columns: 3, rows: 1)
+    check(released.count == 2 && released[0].count == 3 && released[1].count == 2,
+          "解散后应用从当前页开始释放，放不下自动新建页")
+
+    // 追加到指定页：有空位则落在页尾，已满则按容量顺延
+    let appendedRoom = PageComposer.appending([apps[3]], toPage: 1, in: [[apps[0]], [apps[1]]],
+                                              columns: 2, rows: 1)
+    check(appendedRoom == [[apps[0]], [apps[1], apps[3]]], "追加到有空位的页面时直接落在页尾")
+
+    let appended = PageComposer.appending([apps[3]], toPage: 1, in: [[apps[0]], [apps[1], apps[2]]],
+                                          columns: 2, rows: 1)
+    check(appended.count == 3 && appended[1].count == 2 && appended[2] == [apps[3]],
+          "追加到已满页时按容量顺延到下一页")
 }
 
 // MARK: - 入口
@@ -373,6 +402,8 @@ func testFolderAndGridItem() throws {
 do {
     testFuzzySearch()
     testAppVersion()
+    testGridPacker()
+    testPageComposer()
     try testScanner()
     try testConfigStore()
     try testFolderAndGridItem()

@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let config = ConfigStore.load()
         ThemeManager.current = config.theme
+        NSLog("Rlaunch: 背景渲染方式 = %@", SystemGlass.rendererName)
 
         mainController = MainWindowController(config: config) // 内部已启动扫描
         mainController.show()

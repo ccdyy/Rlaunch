@@ -39,6 +39,8 @@ final class FolderPopoverView: NSView {
     private var appItemViews: [AppItemView] = []
     /// 当前生效的网格规格（由 layout() 按卡片尺寸动态推算）
     private var appliedGridConfig: GridLayoutConfig?
+    /// 仅在内容真正重新加载后重置滚动位置，避免窗口缩放/主题切换把用户滚到一半的列表弹回顶部
+    private var needsScrollReset = true
 
     init(
         folder: FolderConfig,
@@ -197,8 +199,18 @@ final class FolderPopoverView: NSView {
         self.pendingPlaceAppsCount = pendingPlaceAppsCount
         self.isSelectionDisabled = isSelectionDisabled
         titleField.stringValue = folder.name.isEmpty ? "文件夹" : folder.name
+        // 只有条目真正增删时才回到顶部；仅选中状态变化不应打断用户的滚动位置
+        if expectedIdentifiers(for: folder) != appItemViews.map({ $0.item.identifier }) {
+            needsScrollReset = true
+        }
         reloadFolderApps()
         needsLayout = true
+    }
+
+    /// 该文件夹当前应展示的条目标识符（顺序与 reloadFolderApps 一致）
+    private func expectedIdentifiers(for folder: FolderConfig) -> [String] {
+        let paths = Set(folder.appPaths)
+        return allApps.filter { paths.contains($0.path) }.map { "app:\($0.path)" }
     }
 
     private func reloadFolderApps() {
@@ -385,9 +397,12 @@ final class FolderPopoverView: NSView {
             view.frame = NSRect(x: x, y: y, width: cellW, height: cellH)
         }
 
-        // 默认显示最上面的应用：重置滚动条至顶部
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 0))
-        scrollView.reflectScrolledClipView(scrollView.contentView)
+        // 默认显示最上面的应用：仅在内容重新加载后重置滚动条，避免布局重算把用户弹回顶部
+        if needsScrollReset {
+            needsScrollReset = false
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: 0))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
     }
 
     /// 依据可用宽度与高度推算网格：卡片越大 → 列数越多、图标越大。

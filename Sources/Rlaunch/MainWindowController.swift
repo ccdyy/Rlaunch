@@ -27,11 +27,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var settingsController: SettingsWindowController?
     private var folderPopoverView: FolderPopoverView?
     private let toastView = ToastView()
+    private let emptyStateView = EmptyStateView()
 
     private(set) var isSelectionMode = false
     private var selectedItems: [GridItem] = []
     private var selectedIdentifiers: Set<String> { Set(selectedItems.map { $0.identifier }) }
     private static let maxSelectionCount = SelectionTrayView.maxSelectionCount
+    /// 当前运行中的应用 bundleID（用于在图标上显示运行小圆点）
+    private var runningBundleIDs: Set<String> = []
+    /// 键盘焦点（方向键导航）
+    private var focusPage: Int?
+    private var focusedIdentifier: String?
 
     func showToast(_ message: String) {
         guard let root = window?.contentView else { return }
@@ -207,9 +213,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         scrollView.onTextInput = { [weak self] text in self?.beginSearch(with: text) }
         scrollView.onFocusSearch = { [weak self] in self?.focusSearchField() }
+        scrollView.onConfirm = { [weak self] in self?.activateFocusedOrFirstResult() }
+        scrollView.onMoveFocus = { [weak self] dx, dy in self?.moveFocus(dx: dx, dy: dy) }
+
+        emptyStateView.onAction = { [weak self] in self?.rescan() }
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(configDidChange), name: ConfigStore.didChange, object: nil)
+        observeRunningApplications()
 
         startScan()
     }
@@ -220,6 +231,32 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         frameSaveTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    // MARK: - 运行中应用指示
+
+    private func observeRunningApplications() {
+        refreshRunningApplications()
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification,
+                     NSWorkspace.didTerminateApplicationNotification] {
+            center.addObserver(self, selector: #selector(runningAppsChanged), name: name, object: nil)
+        }
+    }
+
+    @objc private func runningAppsChanged() {
+        refreshRunningApplications()
+    }
+
+    private func refreshRunningApplications() {
+        let ids = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+        guard ids != runningBundleIDs else { return }
+        runningBundleIDs = ids
+        syncRunningState()
+    }
+
+    private func syncRunningState() {
+        for page in pages { page.runningBundleIDs = runningBundleIDs }
     }
 
     /// 窗口初始位置：优先恢复上次位置，位置失效（显示器变更/越界）或首次启动时居中显示。
@@ -262,6 +299,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         topBar.onSettings = { [weak self] in self?.openSettings() }
         topBar.onRefresh = { [weak self] in self?.rescan() }
+        topBar.onSearchSubmit = { [weak self] in self?.activateFocusedOrFirstResult() }
     }
 
     private func wireSelectionTray() {
@@ -294,29 +332,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 数据组装
 
     private func allAvailableItems() -> [GridItem] {
+        let visible = config.visibleApps(from: apps)
         if !searchQuery.isEmpty {
-            return apps.filter { FuzzySearch.matches(name: $0.name, query: searchQuery) }.map { .app($0) }
+            return visible.filter { FuzzySearch.matches(name: $0.name, query: searchQuery) }.map { .app($0) }
         }
         let inFolders = config.appPathsInAllFolders()
         var items: [GridItem] = config.folders.map { .folder($0) }
-        items += apps.filter { !inFolders.contains($0.path) }.map { .app($0) }
+        items += visible.filter { !inFolders.contains($0.path) }.map { .app($0) }
         return items
     }
 
-    /// 分页面数据：主桌面优先使用 pageOrders，各页独立、移走后不跨页填补
+    /// 分页面数据：主桌面优先使用 pageOrders，各页独立、移走后不跨页填补。
+    /// 分页容量统一交给 `PageComposer`（按网格实际格数计算），与布局使用同一套装箱算法。
     private func currentPagesItems() -> [[GridItem]] {
-        let perPage = max(config.columns * config.rows, 1)
+        let cols = max(config.columns, 1)
+        let rows = max(config.rows, 1)
         let all = allAvailableItems()
 
+        // 搜索结果是临时视图，直接按容量切页，不参与 pageOrders 布局
         if !searchQuery.isEmpty {
-            if all.isEmpty { return [[]] }
-            var res: [[GridItem]] = []
-            var i = 0
-            while i < all.count {
-                res.append(Array(all[i..<min(i + perPage, all.count)]))
-                i += perPage
-            }
-            return res
+            return PageComposer.chunk(all, columns: cols, rows: rows)
         }
 
         var itemMap: [String: GridItem] = [:]
@@ -324,54 +359,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         var appMap: [String: AppInfo] = [:]
         for a in apps { appMap[a.path] = a }
 
-        if !config.pageOrders.isEmpty {
-            var pages: [[GridItem]] = []
-            var visited = Set<String>()
-
-            for savedPage in config.pageOrders {
-                var pItems: [GridItem] = []
-                for key in savedPage {
-                    if let item = resolveGridItem(orderKey: key, itemMap: itemMap, appMap: appMap) {
-                        if !visited.contains(item.identifier) {
-                            pItems.append(item)
-                            visited.insert(item.identifier)
-                        }
-                    }
-                }
-                pages.append(pItems)
-            }
-
-            let unvisited = all.filter { !visited.contains($0.identifier) }
-            if !unvisited.isEmpty {
-                var remaining = unvisited
-                if var last = pages.last, last.count < perPage {
-                    pages.removeLast()
-                    let canTake = min(perPage - last.count, remaining.count)
-                    last.append(contentsOf: remaining.prefix(canTake))
-                    remaining.removeFirst(canTake)
-                    pages.append(last)
-                }
-                while !remaining.isEmpty {
-                    let take = min(perPage, remaining.count)
-                    pages.append(Array(remaining.prefix(take)))
-                    remaining.removeFirst(take)
-                }
-            }
-
-            while pages.count > 1 && pages.last?.isEmpty == true {
-                pages.removeLast()
-            }
-            return pages.isEmpty ? [[]] : pages
+        guard !config.pageOrders.isEmpty else {
+            return PageComposer.chunk(all, columns: cols, rows: rows)
         }
 
-        if all.isEmpty { return [[]] }
-        var res: [[GridItem]] = []
-        var i = 0
-        while i < all.count {
-            res.append(Array(all[i..<min(i + perPage, all.count)]))
-            i += perPage
+        // 按 pageOrders 解析出各页（空数组表示用户刻意留白的页面）
+        var pages: [[GridItem]] = []
+        var visited = Set<String>()
+        for savedPage in config.pageOrders {
+            var pItems: [GridItem] = []
+            for key in savedPage {
+                guard let item = resolveGridItem(orderKey: key, itemMap: itemMap, appMap: appMap),
+                      !visited.contains(item.identifier) else { continue }
+                pItems.append(item)
+                visited.insert(item.identifier)
+            }
+            pages.append(pItems)
         }
-        return res
+
+        let unvisited = all.filter { !visited.contains($0.identifier) }
+        return PageComposer.compose(savedPages: pages, unvisited: unvisited, columns: cols, rows: rows)
     }
 
     private func savePagesOrder(_ newPages: [[GridItem]]) {
@@ -430,6 +437,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let pageCount = max(pageList.count, 1)
         scrollView.setPageCount(pageCount)
 
+        // 焦点条目已不存在（搜索、隐藏、删除等）时清除焦点，避免高亮停留在不存在的条目上
+        if let id = focusedIdentifier,
+           !pageList.contains(where: { page in page.contains(where: { $0.identifier == id }) }) {
+            focusPage = nil
+            focusedIdentifier = nil
+        }
+
         let ids = selectedIdentifiers
         let isLimitReached = selectedItems.count >= Self.maxSelectionCount
         let cfg = gridConfig()
@@ -448,9 +462,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let page = pages[pIndex]
             page.layoutConfig = cfg
             page.items = pItems
+            page.runningBundleIDs = runningBundleIDs
             page.isSelectionMode = isSelectionMode
             page.selectedIdentifiers = ids
             page.isSelectionDisabled = isLimitReached
+            page.focusedIdentifier = (pIndex == focusPage) ? focusedIdentifier : nil
         }
 
         lastLayoutSize = .zero
@@ -459,6 +475,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let target = min(max(keepPage ?? scrollView.currentPage, 0), pageCount - 1)
         scrollView.scrollToPage(target, animated: false)
         topBar.setPage(target, of: pageCount)
+        updateEmptyState(pageList: pageList)
+    }
+
+    /// 空状态提示：全部无应用 / 搜索无结果时给出明确指引
+    private func updateEmptyState(pageList: [[GridItem]]) {
+        let totalItems = pageList.reduce(0) { $0 + $1.count }
+        guard totalItems == 0 else {
+            emptyStateView.hide()
+            return
+        }
+        guard let root = window?.contentView else { return }
+
+        if !searchQuery.isEmpty {
+            emptyStateView.show(
+                symbol: "magnifyingglass",
+                title: "没有匹配的应用",
+                detail: "换个关键词试试，或按 Esc 清空搜索",
+                actionTitle: nil,
+                in: root)
+        } else {
+            emptyStateView.show(
+                symbol: "square.grid.2x2",
+                title: "还没有扫描到应用",
+                detail: "请检查「设置 → 应用扫描」中的目录是否正确",
+                actionTitle: "重新扫描",
+                in: root)
+        }
     }
 
     /// 创建一页网格视图并接好全部回调；页面索引在复用期间保持不变，故可安全捕获。
@@ -517,10 +560,94 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 动作
 
     private func activateApp(_ info: AppInfo) {
-        NSWorkspace.shared.open(URL(fileURLWithPath: info.path))
+        guard FileManager.default.fileExists(atPath: info.path) else {
+            // 应用已被移动或删除：给出反馈并自动重扫，避免「点了没反应」
+            showToast("「\(info.name)」已不存在，正在重新扫描…")
+            rescan()
+            return
+        }
+        NSWorkspace.shared.open(
+            URL(fileURLWithPath: info.path),
+            configuration: NSWorkspace.OpenConfiguration()
+        ) { [weak self] _, error in
+            guard let error else { return }
+            self?.showToast("无法打开「\(info.name)」：\(error.localizedDescription)")
+        }
         if config.hideOnLaunch || prefersNormalWindowStacking() || isPseudoFullScreen {
             hide()
         }
+    }
+
+    /// 回车：优先打开键盘焦点条目；搜索状态下退化为打开首个结果
+    private func activateFocusedOrFirstResult() {
+        if let id = focusedIdentifier,
+           let item = currentPagesItems().flatMap({ $0 }).first(where: { $0.identifier == id }) {
+            switch item {
+            case .app(let info): activateApp(info)
+            case .folder(let folder): openFolder(folder)
+            }
+            return
+        }
+        guard !searchQuery.isEmpty else { return }
+        guard let first = currentPagesItems().first?.first else { return }
+        switch first {
+        case .app(let info): activateApp(info)
+        case .folder(let folder): openFolder(folder)
+        }
+    }
+
+    // MARK: - 键盘焦点导航
+
+    /// 方向键导航：已有焦点时在网格中移动（横向到边界则翻页）；
+    /// 尚无焦点时 `↑/↓` 建立焦点，`←/→` 保持原有的翻页手感。
+    private func moveFocus(dx: Int, dy: Int) {
+        let cols = max(config.columns, 1)
+        let rows = max(config.rows, 1)
+        let pageList = currentPagesItems()
+        guard !pageList.isEmpty else { return }
+
+        let page = min(max(focusPage ?? scrollView.currentPage, 0), pageList.count - 1)
+        let items = pageList[page]
+        guard !items.isEmpty else { return }
+
+        guard focusPage == page,
+              let id = focusedIdentifier,
+              let current = items.firstIndex(where: { $0.identifier == id }) else {
+            if dy != 0 {
+                setFocus(page: page, identifier: (dy < 0 ? items.last : items.first)?.identifier)
+            } else {
+                scrollView.scrollToPage(page + dx, animated: true)
+            }
+            return
+        }
+
+        let placements = GridPacker.placements(for: items, columns: cols, rows: rows)
+        if let target = GridPacker.neighborIndex(from: current, dx: dx, dy: dy, placements: placements) {
+            setFocus(page: page, identifier: items[target].identifier)
+            return
+        }
+        // 横向到边界则翻页，纵向到边界保持不动
+        if dx > 0, page + 1 < pageList.count {
+            setFocus(page: page + 1, identifier: pageList[page + 1].first?.identifier)
+        } else if dx < 0, page > 0 {
+            setFocus(page: page - 1, identifier: pageList[page - 1].last?.identifier)
+        }
+    }
+
+    private func setFocus(page: Int, identifier: String?) {
+        focusPage = identifier == nil ? nil : page
+        focusedIdentifier = identifier
+        for (i, p) in pages.enumerated() {
+            p.focusedIdentifier = (i == focusPage) ? focusedIdentifier : nil
+        }
+        if identifier != nil, page != scrollView.currentPage {
+            scrollView.scrollToPage(page, animated: true)
+        }
+    }
+
+    private func clearFocus() {
+        guard focusedIdentifier != nil else { return }
+        setFocus(page: 0, identifier: nil)
     }
 
     private func openFolder(_ folder: FolderConfig) {
@@ -590,6 +717,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != searchQuery else { return }
         if isSelectionMode { exitSelectionMode() }
+        clearFocus()
         searchQuery = trimmed
         reloadData(keepPage: 0)
     }
@@ -744,13 +872,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         // 从桌面页面中移除
         let selectedIds = Set(appPaths.map { "app:\($0)" })
-        var pageList = currentPagesItems()
-        for i in 0..<pageList.count {
-            pageList[i].removeAll { item in
-                guard let path = item.appPath else { return false }
-                return selectedIds.contains("app:\(path)")
-            }
-        }
+        let pageList = PageComposer.removing(selectedIds, from: currentPagesItems())
         savePagesOrder(pageList)
         compactEmptyPages()
 
@@ -786,31 +908,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard isSelectionMode, !selectedItems.isEmpty else { return }
         guard searchQuery.isEmpty else { return }
 
-        var pageList = currentPagesItems()
         let p = scrollView.currentPage
-        let perPage = max(config.columns * config.rows, 1)
-
-        while pageList.count <= p { pageList.append([]) }
-
-        let idsToRemove = Set(selectedItems.map { $0.identifier })
-        for i in 0..<pageList.count {
-            pageList[i].removeAll { idsToRemove.contains($0.identifier) }
-        }
-
-        // 选中的 App 和 文件夹 一同放置到当前页
-        pageList[p].append(contentsOf: selectedItems)
-
-        var curP = p
-        while curP < pageList.count && pageList[curP].count > perPage {
-            let overflow = pageList[curP].removeLast()
-            let nextP = curP + 1
-            if nextP < pageList.count {
-                pageList[nextP].insert(overflow, at: 0)
-            } else {
-                pageList.append([overflow])
-            }
-            curP += 1
-        }
+        let pageList = PageComposer.appending(
+            selectedItems,
+            toPage: p,
+            in: currentPagesItems(),
+            columns: max(config.columns, 1),
+            rows: max(config.rows, 1)
+        )
 
         savePagesOrder(pageList)
         compactEmptyPages()
@@ -818,11 +923,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         reloadData(keepPage: p)
     }
 
-    /// 拖动重排序放置：无论文件夹还是app，均严格按照选中的先后顺序插入到目标页的指定位置
+    /// 拖动重排序放置：无论文件夹还是应用，均严格按照选中的先后顺序插入到目标页的指定位置
     private func handleReorderDrop(itemIds: [String], targetPageIndex: Int, targetIndex: Int) {
         guard searchQuery.isEmpty else { return }
 
-        // 待排序条目：无论和文件夹还是app，顺序均严格按照选中的先后顺序
+        // 待排序条目：无论文件夹还是应用，顺序均严格按照选中的先后顺序
         let movingItems: [GridItem]
         if isSelectionMode && !selectedItems.isEmpty {
             movingItems = selectedItems
@@ -830,24 +935,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let itemMap = allAvailableItemsMap()
             movingItems = itemIds.compactMap { itemMap[$0] }
         }
-
         guard !movingItems.isEmpty else { return }
 
-        var pageList = currentPagesItems()
-        let p = min(max(0, targetPageIndex), max(0, pageList.count - 1))
-        while pageList.count <= p { pageList.append([]) }
-
-        let perPage = max(config.columns * config.rows, 1)
-
-        // 找到目标页移动前的参考物，以保证插入位置精准
-        let movingIds = Set(movingItems.map { $0.identifier })
-        let curItems = pageList[p]
-        let refItem: GridItem? = (targetIndex < curItems.count) ? curItems[targetIndex] : nil
-
-        // 从所有页面中移除这些待移动条目
-        for pi in 0..<pageList.count {
-            pageList[pi].removeAll { movingIds.contains($0.identifier) }
-        }
+        let p = max(0, targetPageIndex)
+        let pageList = PageComposer.move(
+            movingItems,
+            toPage: p,
+            at: targetIndex,
+            in: currentPagesItems(),
+            columns: max(config.columns, 1),
+            rows: max(config.rows, 1)
+        )
 
         // 如果包含从文件夹内拖出来的应用，从该文件夹内剔除
         for path in movingItems.compactMap({ $0.appPath }) {
@@ -856,34 +954,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         }
 
-        // 计算目标页最终插入索引
-        var insertIdx = pageList[p].count
-        if let ref = refItem, let foundIdx = pageList[p].firstIndex(where: { $0.identifier == ref.identifier }) {
-            insertIdx = foundIdx
-        } else {
-            insertIdx = min(targetIndex, pageList[p].count)
-        }
-
-        // 严格按照选中的先后顺序一次性插入
-        pageList[p].insert(contentsOf: movingItems, at: insertIdx)
-
-        // 页面容量顺延溢出处理
-        var curP = p
-        while curP < pageList.count && pageList[curP].count > perPage {
-            let overflow = pageList[curP].removeLast()
-            let nextP = curP + 1
-            if nextP < pageList.count {
-                pageList[nextP].insert(overflow, at: 0)
-            } else {
-                pageList.append([overflow])
-            }
-            curP += 1
-        }
-
         savePagesOrder(pageList)
         compactEmptyPages()
         exitSelectionMode()
-        reloadData(keepPage: p)
+        reloadData(keepPage: min(p, max(pageList.count - 1, 0)))
     }
 
     private func allAvailableItemsMap() -> [String: GridItem] {
@@ -916,20 +990,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
 
         // 关键：在加入 config.folders 之前先获取现存页面列表，避免 currentPagesItems 把新文件夹作为 unvisited 重复追加到最后一页
-        var pageList = currentPagesItems()
         let selectedIds = Set(appPaths.map { "app:\($0)" })
         let p = scrollView.currentPage
-
-        while pageList.count <= p { pageList.append([]) }
-
-        for i in 0..<pageList.count {
-            pageList[i].removeAll { item in
-                guard let path = item.appPath else { return false }
-                return selectedIds.contains("app:\(path)")
-            }
-        }
-
-        pageList[p].append(.folder(newFolder))
+        let pageList = PageComposer.appending(
+            [.folder(newFolder)],
+            toPage: p,
+            in: PageComposer.removing(selectedIds, from: currentPagesItems()),
+            columns: max(config.columns, 1),
+            rows: max(config.rows, 1)
+        )
 
         // 将新文件夹正式纳入配置并持久化
         config.folders.append(newFolder)
@@ -957,13 +1026,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
 
         // 从桌面页面中移除这些 App
-        var pageList = currentPagesItems()
-        for i in 0..<pageList.count {
-            pageList[i].removeAll { item in
-                guard let p = item.appPath else { return false }
-                return pathSet.contains(p)
-            }
-        }
+        let appIds = Set(validPaths.map { "app:\($0)" })
+        let pageList = PageComposer.removing(appIds, from: currentPagesItems())
         savePagesOrder(pageList)
         compactEmptyPages()
         ConfigStore.save(config)
@@ -987,20 +1051,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let id = fID, let idx = config.folders.firstIndex(where: { $0.id == id }) else { return }
         config.folders[idx].appPaths.removeAll { $0 == path }
 
-        // 释放回当前页
-        var pageList = currentPagesItems()
-        var curP = min(scrollView.currentPage, max(0, pageList.count - 1))
-        if pageList.isEmpty { pageList = [[]] }
-        let perPage = max(config.columns * config.rows, 1)
-
-        while curP < pageList.count && pageList[curP].count >= perPage {
-            curP += 1
-        }
-        if curP >= pageList.count {
-            pageList.append([])
-        }
+        // 释放回当前页（逐页找空位，放不下自动新建页）
+        var pageList = PageComposer.removing(["app:\(path)"], from: currentPagesItems())
         if let appInfo = apps.first(where: { $0.path == path }) {
-            pageList[curP].append(.app(appInfo))
+            pageList = PageComposer.release(
+                [.app(appInfo)],
+                fromPage: scrollView.currentPage,
+                in: pageList,
+                columns: max(config.columns, 1),
+                rows: max(config.rows, 1)
+            )
         }
 
         savePagesOrder(pageList)
@@ -1026,32 +1086,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let releasedPaths = config.folders[fIdx].appPaths
         config.folders.remove(at: fIdx)
 
-        var pageList = currentPagesItems()
-        let startPage = min(scrollView.currentPage, max(0, pageList.count - 1))
-        if pageList.isEmpty { pageList = [[]] }
-
-        // 移除文件夹项
-        for i in 0..<pageList.count {
-            pageList[i].removeAll { $0.folderID == folder.id }
+        let startPage = max(scrollView.currentPage, 0)
+        // 先移除文件夹本身，再把内部应用按容量释放到当前页及后续页
+        var pageList = PageComposer.removing(["folder:\(folder.id)"], from: currentPagesItems())
+        let released = releasedPaths.compactMap { path in
+            apps.first(where: { $0.path == path }).map { GridItem.app($0) }
         }
-
-        let perPage = max(config.columns * config.rows, 1)
-
-        var curP = startPage
-        for path in releasedPaths {
-            guard let appInfo = apps.first(where: { $0.path == path }) else { continue }
-            while curP < pageList.count && pageList[curP].count >= perPage {
-                curP += 1
-            }
-            if curP >= pageList.count {
-                pageList.append([])
-            }
-            pageList[curP].append(.app(appInfo))
-        }
+        pageList = PageComposer.release(
+            released,
+            fromPage: startPage,
+            in: pageList,
+            columns: max(config.columns, 1),
+            rows: max(config.rows, 1)
+        )
 
         savePagesOrder(pageList)
         compactEmptyPages()
-        reloadData(keepPage: startPage)
+        reloadData(keepPage: max(startPage, 0))
     }
 
     private func createFolder() {
@@ -1185,8 +1236,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 回收清空的页面（至少保留首页）
     private func compactEmptyPages() {
         guard config.pageOrders.count > 1 else { return }
-        let nonEmpty = config.pageOrders.filter { !$0.isEmpty }
-        config.pageOrders = nonEmpty.isEmpty ? [[]] : nonEmpty
+        config.pageOrders = PageComposer.compact(config.pageOrders)
         config.itemOrder = config.pageOrders.flatMap { $0 }
         ConfigStore.save(config)
     }
@@ -1230,6 +1280,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     sub.submenu = submenu
                     menu.addItem(sub)
                 }
+
+                menu.addItem(.separator())
+
+                let reveal = NSMenuItem(title: "在访达中显示", action: #selector(menuRevealInFinder(_:)), keyEquivalent: "")
+                reveal.representedObject = info.path
+                menu.addItem(reveal)
+
+                if runningBundleIDs.contains(info.bundleID) {
+                    let quit = NSMenuItem(title: "退出应用", action: #selector(menuQuitApp(_:)), keyEquivalent: "")
+                    quit.representedObject = info.bundleID
+                    menu.addItem(quit)
+                }
+
+                let hide = NSMenuItem(title: "从启动台隐藏", action: #selector(menuHideApp(_:)), keyEquivalent: "")
+                hide.representedObject = info.path
+                menu.addItem(hide)
             case .folder(let folder):
                 let sizeItem = NSMenuItem(title: "网格大小", action: nil, keyEquivalent: "")
                 let sizeSub = NSMenu()
@@ -1274,6 +1340,38 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func menuNewFolder(_ sender: Any?) { createFolder() }
     @objc private func menuRescan(_ sender: Any?) { rescan() }
+
+    @objc private func menuRevealInFinder(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    @objc private func menuQuitApp(_ sender: NSMenuItem) {
+        guard let bundleID = sender.representedObject as? String else { return }
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        running.forEach { $0.terminate() }
+    }
+
+    @objc private func menuHideApp(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        hideApp(path: path)
+    }
+
+    /// 从启动台隐藏应用：同时从所有文件夹中移出，避免「隐藏了却还在文件夹里」
+    private func hideApp(path: String) {
+        guard !config.isHidden(appPath: path) else { return }
+        config.hiddenAppPaths.append(path)
+        for i in 0..<config.folders.count {
+            config.folders[i].appPaths.removeAll { $0 == path }
+        }
+        let pageList = PageComposer.removing(["app:\(path)"], from: currentPagesItems())
+        savePagesOrder(pageList)
+        compactEmptyPages()
+        ConfigStore.save(config)
+        exitSelectionMode()
+        reloadData(keepPage: scrollView.currentPage)
+        showToast("已隐藏「\((apps.first { $0.path == path }?.name) ?? path)」，可在设置中恢复")
+    }
     @objc private func menuRemoveFromFolder(_ sender: NSMenuItem) {
         if let path = sender.representedObject as? String { removeAppFromFolder(path) }
     }
@@ -1411,6 +1509,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         dismissPrompt()
         if folderPopoverView != nil { dismissFolderPopover() }
         if isSelectionMode { exitSelectionMode() }
+        clearFocus()
         clearSearch()
         persistWindowFrame()
         // 先移出屏幕再做全屏状态还原：避免还原尺寸的过程被用户看到

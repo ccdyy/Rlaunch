@@ -8,6 +8,10 @@ final class SnapScrollView: NSScrollView {
     var onTextInput: ((String) -> Void)?
     /// ⌘F 聚焦搜索框
     var onFocusSearch: (() -> Void)?
+    /// 回车：打开首个搜索结果
+    var onConfirm: (() -> Void)?
+    /// 方向键：参数为 (水平方向, 垂直方向)，用于键盘焦点导航
+    var onMoveFocus: ((Int, Int) -> Void)?
 
     private(set) var pageCount = 1
     private(set) var currentPage = 0
@@ -183,13 +187,16 @@ final class SnapScrollView: NSScrollView {
             return
         }
         switch event.keyCode {
-        case 123: scrollToPage(currentPage - 1, animated: true) // ←
-        case 124: scrollToPage(currentPage + 1, animated: true) // →
+        case 123: onMoveFocus?(-1, 0)                           // ←
+        case 124: onMoveFocus?(1, 0)                            // →
+        case 125: onMoveFocus?(0, 1)                            // ↓
+        case 126: onMoveFocus?(0, -1)                           // ↑
         case 116: scrollToPage(currentPage - 1, animated: true) // PageUp
         case 121: scrollToPage(currentPage + 1, animated: true) // PageDown
         case 115: scrollToPage(0, animated: true)               // Home
         case 119: scrollToPage(pageCount - 1, animated: true)   // End
         case 53: onEscape?()                                    // Esc
+        case 36, 76: onConfirm?()                               // ↩ / 小键盘 Enter
         default:
             // 直接输入可打印字符即开始搜索（无需先点击搜索框）
             let disallowed: NSEvent.ModifierFlags = [.command, .control, .option]

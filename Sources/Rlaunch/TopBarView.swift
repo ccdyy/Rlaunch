@@ -264,13 +264,15 @@ final class SymbolButton: NSButton {
     }
 }
 
-// MARK: - 顶栏（三色按钮 | 文件夹返回 | 搜索 | 页码 全屏 设置）
+// MARK: - 顶栏（三色按钮 | 搜索 | 页码 刷新 全屏 设置）
 
-final class TopBarView: NSView {
+final class TopBarView: NSView, NSSearchFieldDelegate {
     var onRed: (() -> Void)?
     var onYellow: (() -> Void)?
     var onGreen: (() -> Void)?
     var onSearchChanged: ((String) -> Void)?
+    /// 搜索框内回车：打开首个结果
+    var onSearchSubmit: (() -> Void)?
     var onPrevPage: (() -> Void)?
     var onNextPage: (() -> Void)?
     var onSettings: (() -> Void)?
@@ -291,6 +293,7 @@ final class TopBarView: NSView {
         searchField.controlSize = .large
         searchField.sendsSearchStringImmediately = true
         searchField.setAccessibilityLabel("搜索应用")
+        searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
         // 用 textDidChange 通知兜底：action 在中文输入法等场景可能不触发
@@ -349,6 +352,15 @@ final class TopBarView: NSView {
         guard query != lastEmittedQuery else { return }
         lastEmittedQuery = query
         onSearchChanged?(query)
+    }
+
+    /// 回车提交搜索（`sendsSearchStringImmediately` 下 action 无法区分回车与输入，故用命令拦截）
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            onSearchSubmit?()
+            return true
+        }
+        return false
     }
 
     @objc private func greenClicked() { onGreen?() }
@@ -417,21 +429,32 @@ final class TopBarView: NSView {
         super.layout()
         let h = bounds.height
         let gap: CGFloat = 10
+        let sideInset: CGFloat = 16
+        let buttonSize: CGFloat = 36
 
-        traffic.frame = NSRect(x: 16, y: 0, width: 62, height: h)
+        traffic.frame = NSRect(x: sideInset, y: 0, width: 62, height: h)
 
-        let searchWidth = min(460, bounds.width - 380)
-        searchField.frame = NSRect(x: (bounds.width - searchWidth) / 2, y: (h - 30) / 2,
-                                   width: searchWidth, height: 30)
+        // 右侧图标与页码从右边缘依次向左排布，避免窄窗口下与搜索框重叠
+        var rightX = bounds.width - sideInset
+        let buttonY = (h - 30) / 2
+        settingsButton.frame = NSRect(x: rightX - buttonSize, y: buttonY, width: buttonSize, height: 30)
+        rightX -= buttonSize + gap
+        fullscreenButton.frame = NSRect(x: rightX - buttonSize, y: buttonY, width: buttonSize, height: 30)
+        rightX -= buttonSize + gap
+        refreshButton.frame = NSRect(x: rightX - buttonSize, y: buttonY, width: buttonSize, height: 30)
+        rightX -= buttonSize + gap
 
         pageLabel.sizeToFit()
-        let pageW = max(pageLabel.frame.width, 48)
-        pageLabel.frame = NSRect(x: bounds.width - 18 - 36 - gap - 36 - gap - 36 - gap - pageW,
-                                 y: (h - pageLabel.frame.height) / 2,
+        let pageW = max(pageLabel.frame.width, 44)
+        pageLabel.frame = NSRect(x: rightX - pageW, y: (h - pageLabel.frame.height) / 2,
                                  width: pageW, height: pageLabel.frame.height)
+        rightX -= pageW
 
-        settingsButton.frame = NSRect(x: bounds.width - 18 - 36, y: (h - 30) / 2, width: 36, height: 30)
-        fullscreenButton.frame = NSRect(x: bounds.width - 18 - 36 - gap - 36, y: (h - 30) / 2, width: 36, height: 30)
-        refreshButton.frame = NSRect(x: bounds.width - 18 - 36 - gap - 36 - gap - 36, y: (h - 30) / 2, width: 36, height: 30)
+        // 搜索框在「三色按钮」与「页码」之间的可用区间内居中，并留出至少 12pt 间距
+        let minX = traffic.frame.maxX + 16
+        let available = max(120, rightX - 12 - minX)
+        let searchWidth = min(460, available)
+        let searchX = minX + (available - searchWidth) / 2
+        searchField.frame = NSRect(x: searchX, y: (h - 30) / 2, width: searchWidth, height: 30)
     }
 }

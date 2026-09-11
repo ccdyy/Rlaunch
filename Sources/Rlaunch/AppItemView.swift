@@ -82,6 +82,20 @@ final class AppItemView: NSView, NSDraggingSource {
     var isSelectionDisabled: Bool = false {
         didSet { updateSelectionStyle() }
     }
+    /// 应用是否正在运行（在图标下方显示小圆点，类似 Dock 的运行指示）
+    var isRunning: Bool = false {
+        didSet {
+            guard isRunning != oldValue else { return }
+            runningDot.isHidden = !isRunning
+        }
+    }
+    /// 键盘焦点（方向键导航时高亮）
+    var isFocused: Bool = false {
+        didSet {
+            guard isFocused != oldValue else { return }
+            focusRing.isHidden = !isFocused
+        }
+    }
     var onSelectionLimitReached: (() -> Void)?
     var getSelectedItemsForDrag: (() -> [GridItem])?
 
@@ -89,6 +103,10 @@ final class AppItemView: NSView, NSDraggingSource {
     private let singleImageView = NSImageView()
     private let label = NSTextField(labelWithString: "")
     private let badgeView = SelectionBadgeView()
+    /// 运行中指示小圆点
+    private let runningDot = NSView()
+    /// 键盘焦点高亮环
+    private let focusRing = NSView()
 
     // 文件夹专属子组件：采用纯净图层背景（彻底杜绝 NSVisualEffectView 的顶部黑色横线）
     private let folderCard = NSView()
@@ -106,6 +124,15 @@ final class AppItemView: NSView, NSDraggingSource {
         super.init(frame: .zero)
         self.config = config
         wantsLayer = true
+
+        // 键盘焦点高亮环（位于所有内容之下，只露出一圈）
+        focusRing.wantsLayer = true
+        focusRing.layer?.cornerRadius = 14
+        focusRing.layer?.borderWidth = 1.6
+        focusRing.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        focusRing.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
+        focusRing.isHidden = true
+        addSubview(focusRing)
 
         // 单个应用图标
         singleImageView.imageScaling = .scaleProportionallyUpOrDown
@@ -130,6 +157,13 @@ final class AppItemView: NSView, NSDraggingSource {
         // 多选徽章
         badgeView.isHidden = true
         addSubview(badgeView)
+
+        // 运行中指示点（默认隐藏，仅应用且正在运行时显示）
+        runningDot.wantsLayer = true
+        runningDot.layer?.cornerRadius = 2.5
+        runningDot.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        runningDot.isHidden = true
+        addSubview(runningDot)
 
         if case .folder = item {
             registerForDraggedTypes([.rlaunchAppPath])
@@ -211,6 +245,11 @@ final class AppItemView: NSView, NSDraggingSource {
 
             populateFolderSlots(folder: folder)
         }
+        // 辅助功能：VoiceOver 可朗读条目名称与类型
+        let kind = item.isFolder ? "文件夹" : "应用"
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("\(item.displayName)，\(kind)")
+        toolTip = item.isFolder ? "\(item.displayName)（文件夹）" : item.displayName
     }
 
     private func clearFolderSlots() {
@@ -345,6 +384,13 @@ final class AppItemView: NSView, NSDraggingSource {
             let badgeY = min(b.height - badgeSize - 2, iconY + iconSize - badgeSize + 2)
             badgeView.frame = NSRect(x: badgeX, y: badgeY, width: badgeSize, height: badgeSize)
 
+            // 运行指示点：图标正下方居中
+            let dotSize: CGFloat = 5
+            let dotY = max(2, iconY - dotSize - 3)
+            runningDot.frame = NSRect(x: (b.width - dotSize) / 2, y: dotY, width: dotSize, height: dotSize)
+
+            focusRing.frame = NSRect(x: iconX - 5, y: iconY - 5, width: iconSize + 10, height: iconSize + 10)
+
         case .folder(let folder):
             let cardRect = NSRect(x: 2, y: labelH + 2, width: contentW - 4, height: contentH - 2)
             folderCard.frame = cardRect
@@ -352,6 +398,8 @@ final class AppItemView: NSView, NSDraggingSource {
             // 多选徽章位于文件夹卡片右上角
             let badgeSize: CGFloat = 20
             badgeView.frame = NSRect(x: cardRect.maxX - badgeSize - 3, y: cardRect.maxY - badgeSize - 3, width: badgeSize, height: badgeSize)
+
+            focusRing.frame = cardRect.insetBy(dx: -3, dy: -3)
 
             // 内部子槽位布局（spanColumns x spanRows）
             layoutFolderSlots(folder: folder, in: cardRect)

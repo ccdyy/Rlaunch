@@ -13,7 +13,7 @@ final class BackgroundView: NSView {
     private var cornerRadius: CGFloat = 18
 
     /// 毛玻璃 / 兜底底色
-    private weak var effectView: NSVisualEffectView?
+    private weak var glassView: NSView?
     private weak var baseView: GlassBaseView?
 
     /// 切换窗口模式（窗口化 18 / 全屏 0）时同步圆角
@@ -30,19 +30,20 @@ final class BackgroundView: NSView {
     // 由于图标与顶栏盖在中间，肉眼看到的就是「界面四周一圈黑线一闪而过」。
     // 处理方式：上屏前先铺一层与主题一致的兜底底色，等窗口完成首次合成后再揭开毛玻璃。
 
-    /// 上屏前调用：显示兜底底色、隐藏毛玻璃
+    /// 上屏前调用：显示兜底底色、隐藏玻璃
     func prepareForDisplay() {
-        guard let effectView else { return }
+        guard glassView != nil else { return }
         baseView?.isHidden = false
-        effectView.isHidden = true
+        glassView?.isHidden = true
     }
 
-    /// 上屏后调用：等窗口完成首次合成再揭开毛玻璃
+    /// 上屏后调用：等窗口完成首次合成再揭开玻璃。
+    /// 不比较视图身份，始终作用于当前这一份视图，避免中途 setConfig 换过视图后卡在「只有底色」的状态。
     func revealGlassAfterFirstFrame() {
-        guard let effectView else { return }
+        guard glassView != nil else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.effectView === effectView else { return }
-            effectView.isHidden = false
+            guard let self else { return }
+            self.glassView?.isHidden = false
             self.baseView?.isHidden = true
         }
     }
@@ -53,7 +54,7 @@ final class BackgroundView: NSView {
         generation += 1
         let gen = generation
         subviews.forEach { $0.removeFromSuperview() }
-        effectView = nil
+        glassView = nil
         baseView = nil
 
         if let path = config.backgroundImagePath,
@@ -91,16 +92,17 @@ final class BackgroundView: NSView {
         } else {
             let base = GlassBaseView()
             base.wantsLayer = true
+            // 兜底底色默认隐藏：只在 prepareForDisplay() 的那一帧露出。
+            // 若默认可见，任何一次 setConfig（例如拖动透明度滑块）都会新建一层不透明底色，
+            // 把桌面彻底挡住，表现为「透明度调了没反应」。
+            base.isHidden = true
             addSubview(base)
             baseView = base
 
-            let effect = NSVisualEffectView()
-            effect.material = .hudWindow
-            effect.blendingMode = .behindWindow
-            effect.state = .active
-            effect.alphaValue = config.bgOpacity
-            addSubview(effect)
-            effectView = effect
+            // macOS 26+ 用原生 Liquid Glass，更早的系统自动回退到 NSVisualEffectView
+            let glass = SystemGlass.makeBackground(alpha: config.bgOpacity)
+            addSubview(glass)
+            glassView = glass
         }
         applyCornerRadius()
         needsLayout = true
@@ -114,12 +116,8 @@ final class BackgroundView: NSView {
 
     private func applyCornerRadius() {
         for view in subviews {
-            if let effect = view as? NSVisualEffectView {
-                // 毛玻璃必须用 maskImage 做圆角：直接设 layer.cornerRadius 会让
-                // .behindWindow 的背景合成层与圆角蒙版错位，边缘出现一圈暗线。
-                effect.maskImage = cornerRadius > 0.5
-                    ? Self.roundedMaskImage(radius: cornerRadius)
-                    : nil
+            if view === glassView {
+                SystemGlass.setCornerRadius(cornerRadius, on: view)
             } else {
                 view.wantsLayer = true
                 view.layer?.cornerRadius = cornerRadius
@@ -130,16 +128,7 @@ final class BackgroundView: NSView {
 
     /// 可拉伸的圆角蒙版图（九宫格），供 NSVisualEffectView.maskImage 使用
     private static func roundedMaskImage(radius: CGFloat) -> NSImage {
-        let r = max(1, radius)
-        let side = r * 2 + 2
-        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-            NSColor.black.setFill()
-            NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).fill()
-            return true
-        }
-        image.capInsets = NSEdgeInsets(top: r, left: r, bottom: r, right: r)
-        image.resizingMode = .stretch
-        return image
+        SystemGlass.roundedMaskImage(radius: radius)
     }
 
     /// 高斯模糊（radius 0 时返回原图）。

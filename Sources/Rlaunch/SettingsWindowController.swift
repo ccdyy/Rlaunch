@@ -177,6 +177,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let scanPathsContainer = NSView()
     private let scanRowsStack = NSStackView()
     private let addPathButton = NSButton(title: "添加目录…", target: nil, action: nil)
+    private let hiddenPathsContainer = NSView()
+    private let hiddenRowsStack = NSStackView()
     private let depthStepper: NSStepper = makeStepper(value: 3, min: 1, max: 6)
     private var depthBox: NumberStepperBox!
     private let rescanButtonScanTab = NSButton(title: "立即重新扫描", target: nil, action: nil)
@@ -207,6 +209,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let launchAtLoginStatus = NSTextField(labelWithString: "")
     private let rescanButtonGeneralTab = NSButton(title: "重新扫描应用", target: nil, action: nil)
     private let rescanStatusGeneralTab = NSTextField(labelWithString: "")
+    private let openConfigButton = NSButton(title: "打开配置目录", target: nil, action: nil)
+    private let exportConfigButton = NSButton(title: "导出…", target: nil, action: nil)
+    private let importConfigButton = NSButton(title: "导入…", target: nil, action: nil)
+    private let resetButton = NSButton(title: "恢复默认设置", target: nil, action: nil)
+    private let resetLayoutButton = NSButton(title: "重置桌面布局", target: nil, action: nil)
+    private let resetStatusLabel = NSTextField(labelWithString: "")
+    private var isConfirmingReset = false
+    private var isConfirmingLayoutReset = false
 
     // 关于
     private let appNameLabel = NSTextField(labelWithString: "Rlaunch")
@@ -217,6 +227,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // 窗口元素
     private var scrollView: NSScrollView!
     private var containerView: NSView!
+    /// 背景玻璃视图（铺满窗口）与其内容承载视图
+    private var glassView: NSView!
+    private var contentHost: NSView!
     private var headerView: NSView!
     private var tabBarView: NSView!
     private var tabButtons: [TabButton] = []
@@ -267,8 +280,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     /// 统一布局计算
     private func layoutContent() {
-        guard let scrollView, let containerView, let headerView, let tabBarView else { return }
-        let area = scrollView.superview?.bounds ?? scrollView.bounds
+        guard let scrollView, let containerView, let headerView, let tabBarView,
+              let glassView, let contentHost else { return }
+        // 原生玻璃的内容由 contentView 承载，需显式与玻璃视图对齐
+        contentHost.frame = glassView.bounds
+        let area = glassView.bounds
         let width = max(area.width, 540)
         let height = max(area.height, 420)
 
@@ -339,28 +355,28 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         drag.windowToMove = window
         window.contentView = drag
 
-        let effect = NSVisualEffectView()
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 14
-        effect.layer?.masksToBounds = true
-        effect.autoresizingMask = [.width, .height]
-        effect.frame = drag.bounds
-        drag.addSubview(effect)
+        // 背景玻璃：macOS 26+ 用原生 Liquid Glass，更早系统回退到 NSVisualEffectView(.popover)
+        let (glassView, contentHost) = SystemGlass.makeContainer(cornerRadius: 14, material: .popover)
+        glassView.autoresizingMask = [.width, .height]
+        glassView.frame = drag.bounds
+        drag.addSubview(glassView)
+
+        contentHost.autoresizingMask = [.width, .height]
+        contentHost.frame = glassView.bounds
+        self.glassView = glassView
+        self.contentHost = contentHost
 
         // 左侧 Tab 栏
         let tabBar = NSView()
-        effect.addSubview(tabBar)
+        contentHost.addSubview(tabBar)
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.autoresizingMask = [.width, .height]
-        scroll.frame = effect.bounds
-        effect.addSubview(scroll)
+        scroll.frame = contentHost.bounds
+        contentHost.addSubview(scroll)
 
         // 顶部标题栏
         let header = NSView()
@@ -372,7 +388,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         header.addSubview(headerGrip)
         header.addSubview(headerTitle)
         header.addSubview(closeButton)
-        effect.addSubview(header)
+        contentHost.addSubview(header)
 
         let container = NSView()
         scroll.documentView = container
@@ -496,6 +512,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         blurHintLabel.font = .systemFont(ofSize: 11)
         blurHintLabel.textColor = .tertiaryLabelColor
         stack.addArrangedSubview(formHintRow("提示：高斯模糊仅在使用自定义背景图片时生效。"))
+        stack.addArrangedSubview(formHintRow("当前背景渲染方式：\(SystemGlass.rendererName)。"))
     }
 
     // MARK: 2. 网格设置
@@ -564,6 +581,38 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scanActionRow.spacing = 10
         scanActionRow.alignment = .centerY
         stack.addArrangedSubview(formRow(label: "应用索引", control: scanActionRow))
+
+        buildHiddenAppsSection(stack)
+    }
+
+    // MARK: 3b. 已隐藏的应用
+
+    private func buildHiddenAppsSection(_ stack: NSStackView) {
+        stack.addArrangedSubview(makeSectionHeader("已隐藏的应用"))
+
+        hiddenPathsContainer.wantsLayer = true
+        hiddenPathsContainer.layer?.cornerRadius = 8
+        hiddenPathsContainer.layer?.borderWidth = 1
+        hiddenPathsContainer.layer?.borderColor = NSColor.separatorColor.cgColor
+        hiddenPathsContainer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.35).cgColor
+        hiddenPathsContainer.translatesAutoresizingMaskIntoConstraints = false
+        hiddenPathsContainer.widthAnchor.constraint(equalToConstant: FormMetrics.controlAreaWidth).isActive = true
+
+        hiddenRowsStack.orientation = .vertical
+        hiddenRowsStack.spacing = 4
+        hiddenRowsStack.alignment = .leading
+        hiddenRowsStack.translatesAutoresizingMaskIntoConstraints = false
+        hiddenPathsContainer.addSubview(hiddenRowsStack)
+
+        NSLayoutConstraint.activate([
+            hiddenRowsStack.leadingAnchor.constraint(equalTo: hiddenPathsContainer.leadingAnchor, constant: 8),
+            hiddenRowsStack.trailingAnchor.constraint(equalTo: hiddenPathsContainer.trailingAnchor, constant: -8),
+            hiddenRowsStack.topAnchor.constraint(equalTo: hiddenPathsContainer.topAnchor, constant: 6),
+            hiddenRowsStack.bottomAnchor.constraint(equalTo: hiddenPathsContainer.bottomAnchor, constant: -6),
+        ])
+
+        stack.addArrangedSubview(formRow(label: "隐藏列表", control: hiddenPathsContainer))
+        stack.addArrangedSubview(formHintRow("在启动台中右键应用选择「从启动台隐藏」后，可在这里恢复显示。"))
     }
 
     // MARK: 4. 快捷键与手势设置
@@ -692,6 +741,33 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         generalRescanRow.alignment = .centerY
         stack.addArrangedSubview(formRow(label: "应用索引", control: generalRescanRow))
 
+        // 配置维护：打开配置目录 / 导出导入 / 恢复默认（二次点击确认，避免弹出会被全屏窗口遮挡的模态框）
+        for button in [openConfigButton, exportConfigButton, importConfigButton, resetButton, resetLayoutButton] {
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.target = self
+        }
+        openConfigButton.action = #selector(openConfigFolder)
+        exportConfigButton.action = #selector(exportConfig)
+        importConfigButton.action = #selector(importConfig)
+        resetButton.action = #selector(resetClicked)
+        resetLayoutButton.action = #selector(resetLayoutClicked)
+
+        let fileRow = NSStackView(views: [openConfigButton, exportConfigButton, importConfigButton])
+        fileRow.orientation = .horizontal
+        fileRow.spacing = 8
+        fileRow.alignment = .centerY
+        stack.addArrangedSubview(formRow(label: "配置文件", control: fileRow))
+
+        resetStatusLabel.font = .systemFont(ofSize: 11)
+        resetStatusLabel.textColor = .systemOrange
+
+        let resetRow = NSStackView(views: [resetButton, resetLayoutButton, resetStatusLabel])
+        resetRow.orientation = .horizontal
+        resetRow.spacing = 8
+        resetRow.alignment = .centerY
+        stack.addArrangedSubview(formRow(label: "重置", control: resetRow))
+
         buildAboutSection(stack)
     }
 
@@ -747,6 +823,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             refreshLaunchAtLogin()
             refreshPermissionStatus()
             rebuildScanRows()
+            rebuildHiddenRows()
         }
     }
 
@@ -909,6 +986,60 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         layoutContent()
     }
 
+    /// 重建「已隐藏的应用」列表
+    private func rebuildHiddenRows() {
+        hiddenRowsStack.arrangedSubviews.forEach {
+            hiddenRowsStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+
+        if config.hiddenAppPaths.isEmpty {
+            let emptyLabel = NSTextField(labelWithString: "没有被隐藏的应用")
+            emptyLabel.font = .systemFont(ofSize: 12)
+            emptyLabel.textColor = .tertiaryLabelColor
+            hiddenRowsStack.addArrangedSubview(emptyLabel)
+        } else {
+            for path in config.hiddenAppPaths {
+                let rowView = NSStackView()
+                rowView.orientation = .horizontal
+                rowView.spacing = 6
+                rowView.alignment = .centerY
+
+                let icon = NSImageView()
+                icon.image = NSWorkspace.shared.icon(forFile: path)
+                icon.imageScaling = .scaleProportionallyUpOrDown
+                icon.translatesAutoresizingMaskIntoConstraints = false
+                icon.widthAnchor.constraint(equalToConstant: 16).isActive = true
+                icon.heightAnchor.constraint(equalToConstant: 16).isActive = true
+
+                let label = NSTextField(labelWithString: FileManager.default.displayName(atPath: path))
+                label.font = .systemFont(ofSize: 12)
+                label.lineBreakMode = .byTruncatingMiddle
+                label.textColor = .labelColor
+                label.toolTip = path
+                label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+                let restore = NSButton(title: "恢复", target: self, action: #selector(restoreHiddenApp(_:)))
+                restore.bezelStyle = .inline
+                restore.isBordered = false
+                restore.font = .systemFont(ofSize: 11, weight: .medium)
+                restore.contentTintColor = .controlAccentColor
+                restore.setContentHuggingPriority(.required, for: .horizontal)
+                restore.toolTip = "恢复显示"
+
+                rowView.addArrangedSubview(icon)
+                rowView.addArrangedSubview(label)
+                rowView.addArrangedSubview(restore)
+                rowView.translatesAutoresizingMaskIntoConstraints = false
+                rowView.widthAnchor.constraint(equalToConstant: FormMetrics.controlAreaWidth - 16).isActive = true
+
+                hiddenRowsStack.addArrangedSubview(rowView)
+            }
+        }
+        layoutContent()
+    }
+
     // MARK: - 事件处理
 
     @objc private func controlChanged(_ sender: Any?) {
@@ -1053,6 +1184,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scheduleSave()
     }
 
+    /// 恢复被隐藏的应用（交互元素在重建行时动态创建，故用菜单/按钮的 hover 行反查路径）
+    @objc private func restoreHiddenApp(_ sender: NSButton) {
+        guard let rowView = sender.superview as? NSStackView,
+              let index = hiddenRowsStack.arrangedSubviews.firstIndex(of: rowView),
+              index < config.hiddenAppPaths.count else { return }
+        config.hiddenAppPaths.remove(at: index)
+        refreshValues()
+        scheduleSave()
+    }
+
     @objc private func rescanClicked() {
         onRescan?()
         rescanStatusScanTab.stringValue = "已触发重新扫描 ✓"
@@ -1060,6 +1201,141 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.rescanStatusScanTab.stringValue = ""
             self?.rescanStatusGeneralTab.stringValue = ""
+        }
+    }
+
+    // MARK: - 配置维护
+
+    @objc private func openConfigFolder() {
+        let url = ConfigStore.configFileURL
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
+        }
+    }
+
+    /// 导出配置：把当前 config.json 另存一份，便于备份或分享桌面布局
+    @objc private func exportConfig() {
+        persist()
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Rlaunch-config.json"
+        panel.allowedContentTypes = [.json]
+        panel.beginSheetModal(for: window!) { [weak self] resp in
+            guard let self, resp == .OK, let url = panel.url else { return }
+            do {
+                try FileManager.default.copyItem(at: ConfigStore.configFileURL, to: url)
+                self.showResetStatus("已导出 ✓", color: .systemGreen)
+            } catch {
+                self.showResetStatus("导出失败：\(error.localizedDescription)", color: .systemRed)
+            }
+        }
+    }
+
+    /// 导入配置：覆盖当前配置并立即生效
+    @objc private func importConfig() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        panel.message = "选择要导入的 Rlaunch 配置文件"
+        panel.beginSheetModal(for: window!) { [weak self] resp in
+            guard let self, resp == .OK, let url = panel.url else { return }
+            guard let data = try? Data(contentsOf: url),
+                  let imported = try? JSONDecoder().decode(AppConfig.self, from: data) else {
+                self.showResetStatus("导入失败：文件格式不正确", color: .systemRed)
+                return
+            }
+            ConfigStore.save(imported)
+            ThemeManager.current = imported.theme
+            self.config = imported
+            self.refreshValues()
+            NotificationCenter.default.post(name: ConfigStore.didChange, object: nil)
+            self.showResetStatus("已导入 ✓", color: .systemGreen)
+        }
+    }
+
+    /// 重置桌面布局：清空文件夹与分页编排，保留应用与设置
+    @objc private func resetLayoutClicked() {
+        guard isConfirmingLayoutReset else {
+            isConfirmingLayoutReset = true
+            resetLayoutButton.title = "确认重置？"
+            showResetStatus("将清空所有文件夹与页面编排，应用不受影响", color: .systemOrange)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self, self.isConfirmingLayoutReset else { return }
+                self.isConfirmingLayoutReset = false
+                self.resetLayoutButton.title = "重置桌面布局"
+                self.resetStatusLabel.stringValue = ""
+            }
+            return
+        }
+        isConfirmingLayoutReset = false
+        resetLayoutButton.title = "重置桌面布局"
+
+        var latest = ConfigStore.load()
+        latest.folders = []
+        latest.pageOrders = []
+        latest.itemOrder = []
+        ConfigStore.save(latest)
+        config.folders = []
+        config.pageOrders = []
+        config.itemOrder = []
+        NotificationCenter.default.post(name: ConfigStore.didChange, object: nil)
+        showResetStatus("桌面布局已重置 ✓", color: .systemGreen)
+    }
+
+    private func showResetStatus(_ text: String, color: NSColor) {
+        resetStatusLabel.stringValue = text
+        resetStatusLabel.textColor = color
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [weak self] in
+            self?.resetStatusLabel.stringValue = ""
+        }
+    }
+
+    /// 恢复默认设置：首次点击进入确认态，3 秒内再次点击才真正执行。
+    /// 只重置「设置项」，不动文件夹与桌面分页，避免误删用户的桌面布局。
+    @objc private func resetClicked() {
+        guard isConfirmingReset else {
+            isConfirmingReset = true
+            resetButton.title = "确认恢复？"
+            resetStatusLabel.stringValue = "仅重置设置项，保留文件夹与桌面布局"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self, self.isConfirmingReset else { return }
+                self.isConfirmingReset = false
+                self.resetButton.title = "恢复默认设置"
+                self.resetStatusLabel.stringValue = ""
+            }
+            return
+        }
+        isConfirmingReset = false
+        resetButton.title = "恢复默认设置"
+
+        let defaults = AppConfig.defaults
+        config.theme = defaults.theme
+        config.backgroundImagePath = defaults.backgroundImagePath
+        config.bgOpacity = defaults.bgOpacity
+        config.bgBlur = defaults.bgBlur
+        config.columns = defaults.columns
+        config.rows = defaults.rows
+        config.columnSpacing = defaults.columnSpacing
+        config.rowSpacing = defaults.rowSpacing
+        config.fullscreenSpacingScale = defaults.fullscreenSpacingScale
+        config.iconSize = defaults.iconSize
+        config.recursionDepth = defaults.recursionDepth
+        config.scanPaths = defaults.scanPaths
+        config.hotKeyEnabled = false
+        config.hotKeyKeyCode = nil
+        config.hotKeyModifiers = 0
+        config.pinchEnabled = defaults.pinchEnabled
+        config.pinchThreshold = defaults.pinchThreshold
+
+        ThemeManager.current = config.theme
+        refreshValues()
+        scheduleSave()
+        resetStatusLabel.stringValue = "已恢复默认设置 ✓"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.resetStatusLabel.stringValue = ""
         }
     }
 
@@ -1317,29 +1593,37 @@ final class TabButton: NSButton {
 
 // MARK: - 可拖动根视图
 
+/// 拖动设置窗口。
+///
+/// 位移必须基于**屏幕坐标**计算：早先的实现用 `event.locationInWindow` 逐帧累加位移，
+/// 但窗口一旦移动，同一个物理位置在窗口内的坐标就随之改变，于是位移被反向叠加回来，
+/// 窗口在两帧之间来回跳——表现为拖动时不停抖动。
+/// 这里改为在 mouseDown 记录「鼠标屏幕坐标 + 窗口原点」作为锚点，拖动时按绝对偏移定位。
 final class DraggableView: NSView {
     weak var windowToMove: NSWindow?
-    private var lastLocation: NSPoint?
+
+    private var anchorMouseLocation: NSPoint?
+    private var anchorWindowOrigin: NSPoint?
+
+    private var targetWindow: NSWindow? { windowToMove ?? window }
 
     override func mouseDown(with event: NSEvent) {
-        lastLocation = event.locationInWindow
+        guard let target = targetWindow else { return }
+        anchorMouseLocation = target.convertPoint(toScreen: event.locationInWindow)
+        anchorWindowOrigin = target.frame.origin
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let last = lastLocation else { return }
-        let p = event.locationInWindow
-        let dx = p.x - last.x
-        let dy = p.y - last.y
-        if let w = windowToMove {
-            var f = w.frame
-            f.origin.x += dx
-            f.origin.y += dy
-            w.setFrame(f, display: true)
-        }
-        lastLocation = p
+        guard let target = targetWindow,
+              let anchorMouse = anchorMouseLocation,
+              let anchorOrigin = anchorWindowOrigin else { return }
+        let current = target.convertPoint(toScreen: event.locationInWindow)
+        target.setFrameOrigin(NSPoint(x: anchorOrigin.x + (current.x - anchorMouse.x),
+                                      y: anchorOrigin.y + (current.y - anchorMouse.y)))
     }
 
     override func mouseUp(with event: NSEvent) {
-        lastLocation = nil
+        anchorMouseLocation = nil
+        anchorWindowOrigin = nil
     }
 }

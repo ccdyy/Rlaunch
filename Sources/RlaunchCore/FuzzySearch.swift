@@ -42,6 +42,9 @@ public enum FuzzySearch {
         case 2...4: maxDistance = 1
         default: maxDistance = 2
         }
+        // 长度差已超过容错上限时不可能匹配，直接跳过编辑距离计算
+        // （搜索时每敲一个键都会对所有应用跑一遍匹配，这个短路很关键）
+        if abs(nameLower.count - queryLower.count) > maxDistance { return false }
         return levenshtein(nameLower, queryLower) <= maxDistance
     }
 }

@@ -158,6 +158,8 @@ public struct AppConfig: Codable, Equatable {
     public var pinchThreshold: Double = 0.7    // 捏合幅度阈值（灵敏度）
     // 文件夹
     public var folders: [FolderConfig] = []
+    /// 被用户隐藏的应用路径：扫描仍会找到，但不在启动台中展示
+    public var hiddenAppPaths: [String] = []
     // 窗口
     public var windowWidth: Double = 1020
     public var windowHeight: Double = 700
@@ -212,6 +214,7 @@ public struct AppConfig: Codable, Equatable {
         pinchEnabled = try c.decodeIfPresent(Bool.self, forKey: .pinchEnabled) ?? legacyEnabled ?? true
         pinchThreshold = try c.decodeIfPresent(Double.self, forKey: .pinchThreshold) ?? legacyThreshold ?? 0.7
         folders = try c.decodeIfPresent([FolderConfig].self, forKey: .folders) ?? []
+        hiddenAppPaths = try c.decodeIfPresent([String].self, forKey: .hiddenAppPaths) ?? []
         windowWidth = try c.decodeIfPresent(Double.self, forKey: .windowWidth) ?? 1020
         windowHeight = try c.decodeIfPresent(Double.self, forKey: .windowHeight) ?? 700
         windowX = try c.decodeIfPresent(Double.self, forKey: .windowX)
@@ -226,6 +229,17 @@ public struct AppConfig: Codable, Equatable {
         var set = Set<String>()
         for f in folders { set.formUnion(f.appPaths) }
         return set
+    }
+
+    /// 需要在启动台中展示的应用（扫描结果剔除已隐藏项）
+    public func visibleApps(from scanned: [AppInfo]) -> [AppInfo] {
+        guard !hiddenAppPaths.isEmpty else { return scanned }
+        let hidden = Set(hiddenAppPaths)
+        return scanned.filter { !hidden.contains($0.path) }
+    }
+
+    public func isHidden(appPath: String) -> Bool {
+        hiddenAppPaths.contains(appPath)
     }
 
     public func folder(containing path: String) -> FolderConfig? {
@@ -254,6 +268,9 @@ public enum ConfigStore {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("config.json")
     }
+
+    /// 供「打开配置目录」等界面入口使用
+    public static var configFileURL: URL { configURL }
 
     /// 旧版默认扫描路径（展开形式，无 /System/Applications），用于识别需要迁移的存量配置
     private static let legacyDefaultScanPaths = [

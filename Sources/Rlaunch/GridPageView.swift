@@ -38,6 +38,14 @@ final class GridPageView: NSView {
     var isSelectionDisabled: Bool = false {
         didSet { syncSelectionState() }
     }
+    /// 当前运行中的应用 bundleID 集合（用于运行指示点）
+    var runningBundleIDs: Set<String> = [] {
+        didSet { syncRunningState() }
+    }
+    /// 键盘焦点条目标识符
+    var focusedIdentifier: String? {
+        didSet { syncFocusState() }
+    }
 
     var onAppClick: ((AppInfo) -> Void)?
     var onFolderClick: ((FolderConfig) -> Void)?
@@ -125,9 +133,28 @@ final class GridPageView: NSView {
                 isItemSelected: selected,
                 isSelectionDisabled: disabled
             )
+            cellViews[i].isRunning = isItemRunning(item)
+            cellViews[i].isFocused = (item.identifier == focusedIdentifier)
         }
         addSubview(insertionIndicator, positioned: .above, relativeTo: nil)
         needsLayout = true
+    }
+
+    private func isItemRunning(_ item: GridItem) -> Bool {
+        guard case .app(let info) = item else { return false }
+        return runningBundleIDs.contains(info.bundleID)
+    }
+
+    private func syncRunningState() {
+        for (i, item) in items.enumerated() where i < cellViews.count {
+            cellViews[i].isRunning = isItemRunning(item)
+        }
+    }
+
+    private func syncFocusState() {
+        for (i, item) in items.enumerated() where i < cellViews.count {
+            cellViews[i].isFocused = (item.identifier == focusedIdentifier)
+        }
     }
 
     private func syncSelectionState() {
@@ -158,57 +185,23 @@ final class GridPageView: NSView {
         let x0 = (W - gridW) / 2
         let y0 = (H - gridH) / 2
 
-        var occupied = Array(repeating: Array(repeating: false, count: cols), count: rows)
+        // 与分页逻辑共用同一份装箱算法，确保「分页认为放得下」的条目这里一定有位置
+        let placements = GridPacker.placements(for: items, columns: cols, rows: rows)
 
         for (i, view) in cellViews.enumerated() {
-            guard i < items.count else {
+            guard i < items.count, let placed = placements[i] else {
                 view.isHidden = true
                 continue
             }
             let item = items[i]
-            let spanC = min(item.spanColumns, cols)
-            let spanR = min(item.spanRows, rows)
-
-            var placedRow: Int?
-            var placedCol: Int?
-
-            outerLoop: for r in 0..<rows {
-                if r + spanR > rows { continue }
-                for c in 0..<cols {
-                    if c + spanC > cols { continue }
-                    var canFit = true
-                    checkLoop: for dr in 0..<spanR {
-                        for dc in 0..<spanC {
-                            if occupied[r + dr][c + dc] {
-                                canFit = false
-                                break checkLoop
-                            }
-                        }
-                    }
-                    if canFit {
-                        placedRow = r
-                        placedCol = c
-                        break outerLoop
-                    }
-                }
-            }
-
-            guard let pr = placedRow, let pc = placedCol else {
-                view.isHidden = true
-                continue
-            }
-
+            let spanC = min(max(item.spanColumns, 1), cols)
+            let spanR = min(max(item.spanRows, 1), rows)
             view.isHidden = false
-            for dr in 0..<spanR {
-                for dc in 0..<spanC {
-                    occupied[pr + dr][pc + dc] = true
-                }
-            }
 
             let w = CGFloat(spanC) * cellW + CGFloat(spanC - 1) * colSpacing
             let h = CGFloat(spanR) * cellH + CGFloat(spanR - 1) * rowSpacing
-            let x = x0 + CGFloat(pc) * (cellW + colSpacing)
-            let topY = y0 + gridH - CGFloat(pr) * (cellH + rowSpacing)
+            let x = x0 + CGFloat(placed.column) * (cellW + colSpacing)
+            let topY = y0 + gridH - CGFloat(placed.row) * (cellH + rowSpacing)
             let y = topY - h
             view.frame = NSRect(x: x, y: y, width: w, height: h)
         }
