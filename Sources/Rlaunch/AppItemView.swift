@@ -241,15 +241,15 @@ final class AppItemView: NSView, NSDraggingSource {
         case .folder(let folder):
             singleImageView.isHidden = true
             folderCard.isHidden = false
-            label.stringValue = folder.name.isEmpty ? "文件夹" : folder.name
+            label.stringValue = folder.name.isEmpty ? L10n.t("文件夹") : folder.name
 
             populateFolderSlots(folder: folder)
         }
         // 辅助功能：VoiceOver 可朗读条目名称与类型
-        let kind = item.isFolder ? "文件夹" : "应用"
+        let kind = item.isFolder ? L10n.t("文件夹") : L10n.t("应用")
         setAccessibilityRole(.button)
-        setAccessibilityLabel("\(item.displayName)，\(kind)")
-        toolTip = item.isFolder ? "\(item.displayName)（文件夹）" : item.displayName
+        setAccessibilityLabel(L10n.f("%@，%@", item.displayName, kind))
+        toolTip = item.isFolder ? L10n.f("%@（文件夹）", item.displayName) : item.displayName
     }
 
     private func clearFolderSlots() {
@@ -271,7 +271,7 @@ final class AppItemView: NSView, NSDraggingSource {
             // 空文件夹：居中放一个大号默认文件夹符号
             let iv = NSImageView()
             iv.imageScaling = .scaleProportionallyUpOrDown
-            let sym = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: "文件夹")?
+            let sym = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: L10n.t("文件夹"))?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: config.iconSize * 0.72, weight: .regular))
             iv.image = sym
             iv.contentTintColor = .secondaryLabelColor

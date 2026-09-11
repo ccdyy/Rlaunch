@@ -80,7 +80,7 @@ final class FolderPopoverView: NSView {
         cardShadowContainer.addSubview(cardView)
 
         // 文件夹标题（可就地编辑）
-        titleField.stringValue = folder.name.isEmpty ? "文件夹" : folder.name
+        titleField.stringValue = folder.name.isEmpty ? L10n.t("文件夹") : folder.name
         titleField.font = .systemFont(ofSize: 18, weight: .bold)
         titleField.alignment = .left
         titleField.textColor = .labelColor
@@ -95,7 +95,7 @@ final class FolderPopoverView: NSView {
         // 解散文件夹按钮
         dissolveButton.bezelStyle = .inline
         dissolveButton.isBordered = false
-        dissolveButton.title = "解散文件夹"
+        dissolveButton.title = L10n.t("解散文件夹")
         dissolveButton.font = .systemFont(ofSize: 12, weight: .regular)
         dissolveButton.contentTintColor = .secondaryLabelColor
         dissolveButton.target = self
@@ -198,7 +198,7 @@ final class FolderPopoverView: NSView {
         self.selectedIdentifiers = selectedIdentifiers
         self.pendingPlaceAppsCount = pendingPlaceAppsCount
         self.isSelectionDisabled = isSelectionDisabled
-        titleField.stringValue = folder.name.isEmpty ? "文件夹" : folder.name
+        titleField.stringValue = folder.name.isEmpty ? L10n.t("文件夹") : folder.name
         // 只有条目真正增删时才回到顶部；仅选中状态变化不应打断用户的滚动位置
         if expectedIdentifiers(for: folder) != appItemViews.map({ $0.item.identifier }) {
             needsScrollReset = true
@@ -219,12 +219,12 @@ final class FolderPopoverView: NSView {
 
         let appPathSet = Set(folder.appPaths)
         let matchedApps = allApps.filter { appPathSet.contains($0.path) }
-        countLabel.stringValue = "共 \(matchedApps.count) 个应用"
+        countLabel.stringValue = L10n.f("共 %d 个应用", matchedApps.count)
 
         if pendingPlaceAppsCount > 0 {
             placePendingButton.isHidden = false
             placePendingButton.attributedTitle = NSAttributedString(
-                string: "放入选中应用 (\(pendingPlaceAppsCount))",
+                string: L10n.f("放入选中应用 (%d)", pendingPlaceAppsCount),
                 attributes: [
                     .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
                     .foregroundColor: NSColor.white
@@ -280,7 +280,7 @@ final class FolderPopoverView: NSView {
             }
             view.onContextMenu = { [weak self] _ in
                 let menu = NSMenu()
-                let mi = NSMenuItem(title: "从文件夹移出", action: #selector(self?.menuRemoveApp(_:)), keyEquivalent: "")
+                let mi = NSMenuItem(title: L10n.t("从文件夹移出"), action: #selector(self?.menuRemoveApp(_:)), keyEquivalent: "")
                 mi.target = self
                 mi.representedObject = app
                 menu.addItem(mi)
@@ -299,7 +299,7 @@ final class FolderPopoverView: NSView {
 
     @objc private func titleEdited() {
         let trimmed = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalName = trimmed.isEmpty ? "文件夹" : trimmed
+        let finalName = trimmed.isEmpty ? L10n.t("文件夹") : trimmed
         titleField.stringValue = finalName
         onRenameFolder?(finalName)
     }

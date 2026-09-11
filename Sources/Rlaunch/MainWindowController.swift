@@ -490,16 +490,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if !searchQuery.isEmpty {
             emptyStateView.show(
                 symbol: "magnifyingglass",
-                title: "没有匹配的应用",
-                detail: "换个关键词试试，或按 Esc 清空搜索",
+                title: L10n.t("没有匹配的应用"),
+                detail: L10n.t("换个关键词试试，或按 Esc 清空搜索"),
                 actionTitle: nil,
                 in: root)
         } else {
             emptyStateView.show(
                 symbol: "square.grid.2x2",
-                title: "还没有扫描到应用",
-                detail: "请检查「设置 → 应用扫描」中的目录是否正确",
-                actionTitle: "重新扫描",
+                title: L10n.t("还没有扫描到应用"),
+                detail: L10n.t("请检查「设置 → 应用扫描」中的目录是否正确"),
+                actionTitle: L10n.t("重新扫描"),
                 in: root)
         }
     }
@@ -517,7 +517,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         page.onLongPressItem = { [weak self] item in self?.handleLongPress(item) }
         page.onToggleSelectItem = { [weak self] item in self?.toggleSelectItem(item) }
         page.onSelectionLimitReached = { [weak self] in
-            self?.showToast("最多只能添加 \(Self.maxSelectionCount) 个")
+            self?.showToast(L10n.f("最多只能添加 %d 个", Self.maxSelectionCount))
         }
         page.onResizeFolder = { [weak self] folder, cols, rows in
             self?.resizeFolder(folder, cols: cols, rows: rows)
@@ -562,7 +562,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func activateApp(_ info: AppInfo) {
         guard FileManager.default.fileExists(atPath: info.path) else {
             // 应用已被移动或删除：给出反馈并自动重扫，避免「点了没反应」
-            showToast("「\(info.name)」已不存在，正在重新扫描…")
+            showToast(L10n.f("「%@」已不存在，正在重新扫描…", info.name))
             rescan()
             return
         }
@@ -571,7 +571,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             configuration: NSWorkspace.OpenConfiguration()
         ) { [weak self] _, error in
             guard let error else { return }
-            self?.showToast("无法打开「\(info.name)」：\(error.localizedDescription)")
+            self?.showToast(L10n.f("无法打开「%@」：%@", info.name, error.localizedDescription))
         }
         if config.hideOnLaunch || prefersNormalWindowStacking() || isPseudoFullScreen {
             hide()
@@ -688,7 +688,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.toggleSelectItem(.app(app))
         }
         popover.onSelectionLimitReached = { [weak self] in
-            self?.showToast("最多只能添加 \(Self.maxSelectionCount) 个")
+            self?.showToast(L10n.f("最多只能添加 %d 个", Self.maxSelectionCount))
         }
         popover.onPlacePendingApps = { [weak self] in
             self?.placeSelectedAppsToOpenFolder(folderID: folder.id)
@@ -785,7 +785,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             selectedItems.remove(at: idx)
         } else {
             if selectedItems.count >= Self.maxSelectionCount {
-                showToast("最多只能添加 \(Self.maxSelectionCount) 个")
+                showToast(L10n.f("最多只能添加 %d 个", Self.maxSelectionCount))
                 return
             }
 
@@ -983,7 +983,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         let newFolder = FolderConfig(
             id: UUID().uuidString,
-            name: "文件夹",
+            name: L10n.t("文件夹"),
             appPaths: appPaths,
             spanColumns: 1,
             spanRows: 1
@@ -1108,15 +1108,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func createFolder() {
         let p = scrollView.currentPage
         presentPrompt(
-            title: "新建文件夹",
-            message: "输入文件夹名称，之后可以把应用拖入该文件夹",
-            placeholder: "文件夹",
-            confirmTitle: "创建"
+            title: L10n.t("新建文件夹"),
+            message: L10n.t("输入文件夹名称，之后可以把应用拖入该文件夹"),
+            placeholder: L10n.t("文件夹"),
+            confirmTitle: L10n.t("创建")
         ) { [weak self] input in
             guard let self else { return }
             let trimmed = input.trimmingCharacters(in: .whitespaces)
             let folder = FolderConfig(id: UUID().uuidString,
-                                      name: trimmed.isEmpty ? "文件夹" : trimmed,
+                                      name: trimmed.isEmpty ? L10n.t("文件夹") : trimmed,
                                       appPaths: [])
 
             var pageList = self.currentPagesItems()
@@ -1134,21 +1134,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func renameFolder(_ folder: FolderConfig, newName: String? = nil) {
         if let newName = newName {
             guard let idx = config.folders.firstIndex(where: { $0.id == folder.id }) else { return }
-            config.folders[idx].name = newName.isEmpty ? "文件夹" : newName
+            config.folders[idx].name = newName.isEmpty ? L10n.t("文件夹") : newName
             ConfigStore.save(config)
             reloadData(keepPage: scrollView.currentPage)
             return
         }
 
         presentPrompt(
-            title: "重命名文件夹",
-            placeholder: "文件夹",
+            title: L10n.t("重命名文件夹"),
+            placeholder: L10n.t("文件夹"),
             defaultValue: folder.name,
-            confirmTitle: "确定"
+            confirmTitle: L10n.t("确定")
         ) { [weak self] input in
             guard let self, let idx = self.config.folders.firstIndex(where: { $0.id == folder.id }) else { return }
             let name = input.trimmingCharacters(in: .whitespaces)
-            self.config.folders[idx].name = name.isEmpty ? "文件夹" : name
+            self.config.folders[idx].name = name.isEmpty ? L10n.t("文件夹") : name
             ConfigStore.save(self.config)
             self.reloadData(keepPage: self.scrollView.currentPage)
         }
@@ -1164,9 +1164,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func deleteFolder(_ folder: FolderConfig) {
         presentPrompt(
-            title: "删除文件夹",
-            message: "确定删除「\(folder.name)」吗？里面的应用将被释放回主界面。",
-            confirmTitle: "删除并释放",
+            title: L10n.t("删除文件夹"),
+            message: L10n.f("确定删除「%@」吗？里面的应用将被释放回主界面。", folder.name),
+            confirmTitle: L10n.t("删除并释放"),
             showsTextField: false
         ) { [weak self] _ in
             self?.dissolveFolder(folder)
@@ -1176,9 +1176,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 文件夹弹窗里的「解散文件夹」：先收起弹窗，再用窗口内浮层确认
     private func confirmDissolveFolder(_ folder: FolderConfig) {
         presentPrompt(
-            title: "解散文件夹",
-            message: "确定要解散「\(folder.name)」吗？里面的应用将被释放回主界面。",
-            confirmTitle: "解散",
+            title: L10n.t("解散文件夹"),
+            message: L10n.f("确定要解散「%@」吗？里面的应用将被释放回主界面。", folder.name),
+            confirmTitle: L10n.t("解散"),
             showsTextField: false
         ) { [weak self] _ in
             guard let self else { return }
@@ -1266,11 +1266,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             switch item {
             case .app(let info):
                 if let folder = config.folder(containing: info.path) {
-                    let remove = NSMenuItem(title: "从「\(folder.name)」移出", action: #selector(menuRemoveFromFolder(_:)), keyEquivalent: "")
+                    let remove = NSMenuItem(title: L10n.f("从「%@」移出", folder.name), action: #selector(menuRemoveFromFolder(_:)), keyEquivalent: "")
                     remove.representedObject = info.path
                     menu.addItem(remove)
                 } else if !config.folders.isEmpty {
-                    let sub = NSMenuItem(title: "移动到文件夹", action: nil, keyEquivalent: "")
+                    let sub = NSMenuItem(title: L10n.t("移动到文件夹"), action: nil, keyEquivalent: "")
                     let submenu = NSMenu()
                     for f in config.folders {
                         let mi = NSMenuItem(title: f.name, action: #selector(menuMoveToFolder(_:)), keyEquivalent: "")
@@ -1283,27 +1283,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
                 menu.addItem(.separator())
 
-                let reveal = NSMenuItem(title: "在访达中显示", action: #selector(menuRevealInFinder(_:)), keyEquivalent: "")
+                let reveal = NSMenuItem(title: L10n.t("在访达中显示"), action: #selector(menuRevealInFinder(_:)), keyEquivalent: "")
                 reveal.representedObject = info.path
                 menu.addItem(reveal)
 
                 if runningBundleIDs.contains(info.bundleID) {
-                    let quit = NSMenuItem(title: "退出应用", action: #selector(menuQuitApp(_:)), keyEquivalent: "")
+                    let quit = NSMenuItem(title: L10n.t("退出应用"), action: #selector(menuQuitApp(_:)), keyEquivalent: "")
                     quit.representedObject = info.bundleID
                     menu.addItem(quit)
                 }
 
-                let hide = NSMenuItem(title: "从启动台隐藏", action: #selector(menuHideApp(_:)), keyEquivalent: "")
+                let hide = NSMenuItem(title: L10n.t("从启动台隐藏"), action: #selector(menuHideApp(_:)), keyEquivalent: "")
                 hide.representedObject = info.path
                 menu.addItem(hide)
             case .folder(let folder):
-                let sizeItem = NSMenuItem(title: "网格大小", action: nil, keyEquivalent: "")
+                let sizeItem = NSMenuItem(title: L10n.t("网格大小"), action: nil, keyEquivalent: "")
                 let sizeSub = NSMenu()
                 let sizes: [(String, Int, Int)] = [
-                    ("1 × 1 (标准)", 1, 1),
-                    ("2 × 1 (横向双格)", 2, 1),
-                    ("1 × 2 (纵向双格)", 1, 2),
-                    ("2 × 2 (大卡片)", 2, 2)
+                    (L10n.t("1 × 1 (标准)"), 1, 1),
+                    (L10n.t("2 × 1 (横向双格)"), 2, 1),
+                    (L10n.t("1 × 2 (纵向双格)"), 1, 2),
+                    (L10n.t("2 × 2 (大卡片)"), 2, 2)
                 ]
                 for (t, c, r) in sizes {
                     let mi = NSMenuItem(title: t, action: #selector(menuResizeFolderAction(_:)), keyEquivalent: "")
@@ -1316,22 +1316,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 sizeItem.submenu = sizeSub
                 menu.addItem(sizeItem)
 
-                let rename = NSMenuItem(title: "重命名", action: #selector(menuRenameFolder(_:)), keyEquivalent: "")
+                let rename = NSMenuItem(title: L10n.t("重命名"), action: #selector(menuRenameFolder(_:)), keyEquivalent: "")
                 rename.representedObject = folder.id
                 menu.addItem(rename)
 
-                let dissolve = NSMenuItem(title: "解散文件夹", action: #selector(menuDissolveFolder(_:)), keyEquivalent: "")
+                let dissolve = NSMenuItem(title: L10n.t("解散文件夹"), action: #selector(menuDissolveFolder(_:)), keyEquivalent: "")
                 dissolve.representedObject = folder.id
                 menu.addItem(dissolve)
 
-                let del = NSMenuItem(title: "删除文件夹", action: #selector(menuDeleteFolder(_:)), keyEquivalent: "")
+                let del = NSMenuItem(title: L10n.t("删除文件夹"), action: #selector(menuDeleteFolder(_:)), keyEquivalent: "")
                 del.representedObject = folder.id
                 menu.addItem(del)
             }
         } else {
-            let new = NSMenuItem(title: "新建文件夹", action: #selector(menuNewFolder(_:)), keyEquivalent: "")
+            let new = NSMenuItem(title: L10n.t("新建文件夹"), action: #selector(menuNewFolder(_:)), keyEquivalent: "")
             menu.addItem(new)
-            let rescan = NSMenuItem(title: "重新扫描应用", action: #selector(menuRescan(_:)), keyEquivalent: "")
+            let rescan = NSMenuItem(title: L10n.t("重新扫描应用"), action: #selector(menuRescan(_:)), keyEquivalent: "")
             menu.addItem(rescan)
         }
         menu.items.forEach { $0.target = self }
@@ -1370,7 +1370,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ConfigStore.save(config)
         exitSelectionMode()
         reloadData(keepPage: scrollView.currentPage)
-        showToast("已隐藏「\((apps.first { $0.path == path }?.name) ?? path)」，可在设置中恢复")
+        showToast(L10n.f("已隐藏「%@」，可在设置中恢复", (apps.first { $0.path == path }?.name) ?? path))
     }
     @objc private func menuRemoveFromFolder(_ sender: NSMenuItem) {
         if let path = sender.representedObject as? String { removeAppFromFolder(path) }
@@ -1567,6 +1567,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let previous = config
         config = ConfigStore.load()
         ThemeManager.current = config.theme
+        if previous.language != config.language {
+            L10n.setLanguage(config.language)
+            applyLanguage()
+            // 设置窗口就地刷新文案，不重建（重建会闪烁并丢失滚动位置与当前标签页）
+            settingsController?.retranslateInterface()
+        }
         // 背景毛玻璃重建（含高斯模糊重算）代价高，且会瞬时闪一下；
         // 只有背景相关设置真的变了才重建，拖动列间距/图标大小等滑块时保持稳定。
         if previous.backgroundImagePath != config.backgroundImagePath
@@ -1575,6 +1581,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             background.setConfig(config)
         }
         reloadData(keepPage: page)
+    }
+
+    // MARK: - 界面语言
+
+    /// 语言切换后刷新主窗口内的静态文案（搜索占位符、按钮提示等）。
+    /// 条目文案是应用名，与语言无关；空状态与右键菜单都是按需构建/渲染，无需整体重刷。
+    func applyLanguage() {
+        topBar.applyLanguage()
+        if emptyStateView.superview != nil {
+            reloadData(keepPage: scrollView.currentPage)
+        }
     }
 
     // MARK: - 窗口位置记忆

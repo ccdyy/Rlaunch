@@ -94,7 +94,7 @@ final class PromptOverlayView: NSView {
             cardView.addSubview(textField)
         }
 
-        cancelButton.title = "取消"
+        cancelButton.title = L10n.t("取消")
         cancelButton.bezelStyle = .rounded
         cancelButton.target = self
         cancelButton.action = #selector(cancelClicked)

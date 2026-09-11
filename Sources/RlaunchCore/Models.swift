@@ -30,13 +30,13 @@ public struct FolderConfig: Codable, Equatable, Hashable {
 
     public init(
         id: String,
-        name: String = "文件夹",
+        name: String = L10n.t("文件夹"),
         appPaths: [String] = [],
         spanColumns: Int = 1,
         spanRows: Int = 1
     ) {
         self.id = id
-        self.name = name.isEmpty ? "文件夹" : name
+        self.name = name.isEmpty ? L10n.t("文件夹") : name
         self.appPaths = appPaths
         self.spanColumns = max(1, spanColumns)
         self.spanRows = max(1, spanRows)
@@ -49,7 +49,7 @@ public struct FolderConfig: Codable, Equatable, Hashable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "文件夹"
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? L10n.t("文件夹")
         appPaths = try c.decodeIfPresent([String].self, forKey: .appPaths) ?? []
         spanColumns = max(1, try c.decodeIfPresent(Int.self, forKey: .spanColumns) ?? 1)
         spanRows = max(1, try c.decodeIfPresent(Int.self, forKey: .spanRows) ?? 1)
@@ -124,9 +124,9 @@ public enum Theme: String, Codable, CaseIterable {
 
     public var displayName: String {
         switch self {
-        case .light: return "明亮"
-        case .dark: return "深黑"
-        case .system: return "跟随系统"
+        case .light: return L10n.t("明亮")
+        case .dark: return L10n.t("深黑")
+        case .system: return L10n.t("跟随系统")
         }
     }
 }
@@ -169,6 +169,8 @@ public struct AppConfig: Codable, Equatable {
     // 行为
     public var hideOnLaunch: Bool = true         // 启动应用后收起界面
     public var launchAtLogin: Bool = false       // 开机自动启动（SMAppService 登录项）
+    /// 界面语言（默认简体中文）
+    public var language: AppLanguage = .zhHans
     // 自定义排序（存储 GridItem 的唯一键，如 "app:<path>" 或 "folder:<id>"）
     public var itemOrder: [String] = []
     // 分页排序（每页独立存储 GridItem 的唯一键，支持页面空间空置与跨页独立）
@@ -220,9 +222,40 @@ public struct AppConfig: Codable, Equatable {
         windowX = try c.decodeIfPresent(Double.self, forKey: .windowX)
         windowY = try c.decodeIfPresent(Double.self, forKey: .windowY)
         hideOnLaunch = try c.decodeIfPresent(Bool.self, forKey: .hideOnLaunch) ?? true
+        language = try c.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .zhHans
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         itemOrder = try c.decodeIfPresent([String].self, forKey: .itemOrder) ?? []
         pageOrders = try c.decodeIfPresent([[String]].self, forKey: .pageOrders) ?? []
+    }
+
+    /// 把「设置面板」负责的字段从 `source` 覆盖到本配置上。
+    ///
+    /// 主窗口与设置面板各自负责一部分字段，两边都遵循「读取磁盘最新值 → 只改自己的字段 → 写回」，
+    /// 因此这里必须完整列出设置面板的全部字段：早先 `persist()` 手写字段清单时漏掉了
+    /// `language` 与 `hiddenAppPaths`，导致「切换语言」「恢复隐藏应用」写不进配置文件。
+    ///
+    /// 主窗口负责、此处**不覆盖**的字段：`folders` / `itemOrder` / `pageOrders` / `window*` / `hideOnLaunch`。
+    public mutating func applySettings(from source: AppConfig) {
+        scanPaths = source.scanPaths
+        recursionDepth = source.recursionDepth
+        theme = source.theme
+        language = source.language
+        backgroundImagePath = source.backgroundImagePath
+        bgOpacity = source.bgOpacity
+        bgBlur = source.bgBlur
+        columns = source.columns
+        rows = source.rows
+        columnSpacing = source.columnSpacing
+        rowSpacing = source.rowSpacing
+        fullscreenSpacingScale = source.fullscreenSpacingScale
+        iconSize = source.iconSize
+        hotKeyEnabled = source.hotKeyEnabled
+        hotKeyKeyCode = source.hotKeyKeyCode
+        hotKeyModifiers = source.hotKeyModifiers
+        pinchEnabled = source.pinchEnabled
+        pinchThreshold = source.pinchThreshold
+        launchAtLogin = source.launchAtLogin
+        hiddenAppPaths = source.hiddenAppPaths
     }
 
     public func appPathsInAllFolders() -> Set<String> {

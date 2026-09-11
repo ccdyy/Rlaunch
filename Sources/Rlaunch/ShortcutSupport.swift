@@ -86,7 +86,7 @@ enum ShortcutFormatter {
 
     /// 完整快捷键显示串（如「⌘⇧Space」）；未录制时返回「未设置」
     static func displayString(keyCode: Int?, carbonModifiers: Int) -> String {
-        guard let keyCode else { return "未设置" }
+        guard let keyCode else { return L10n.t("未设置") }
         return modifierSymbols(carbonModifiers: carbonModifiers) + keyDisplayString(forKeyCode: UInt16(keyCode))
     }
 

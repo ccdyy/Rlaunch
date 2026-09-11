@@ -1,4 +1,5 @@
 import Cocoa
+import RlaunchCore
 
 // MARK: - 三色圆点按钮（红=隐藏、黄=最小化、绿=全屏）
 // 鼠标悬停时整组按钮显示对应符号（关闭 × / 缩小 − / 全屏 ⤢），
@@ -25,10 +26,7 @@ final class TrafficLightsView: NSView {
         greenDot.target = self
         greenDot.action = #selector(greenClicked)
 
-        // 辅助功能标签：VoiceOver 可朗读三色按钮
-        redDot.setAccessibilityLabel("隐藏 Rlaunch")
-        yellowDot.setAccessibilityLabel("最小化窗口")
-        greenDot.setAccessibilityLabel("切换全屏")
+        applyLanguage()
 
         for d in [redDot, yellowDot, greenDot] {
             addSubview(d)
@@ -40,6 +38,13 @@ final class TrafficLightsView: NSView {
     @objc private func redClicked() { onRed?() }
     @objc private func yellowClicked() { onYellow?() }
     @objc private func greenClicked() { onGreen?() }
+
+    /// 刷新三色按钮的辅助功能标签
+    func applyLanguage() {
+        redDot.setAccessibilityLabel(L10n.t("隐藏 Rlaunch"))
+        yellowDot.setAccessibilityLabel(L10n.t("最小化窗口"))
+        greenDot.setAccessibilityLabel(L10n.t("切换全屏"))
+    }
 
     override func mouseDown(with event: NSEvent) {
         // 阻止点击空白缝隙处冒泡导致窗口误拖动
@@ -193,7 +198,7 @@ final class SearchFieldCell: NSSearchFieldCell {
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
         super.drawInterior(withFrame: cellFrame, in: controlView)
         // 自绘放大镜：固定 15pt 符号图、等比、不可拉伸
-        guard let image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "搜索")?
+        guard let image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: L10n.t("搜索"))?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)) else { return }
         let rect = searchButtonRect(forBounds: cellFrame).insetBy(dx: 1, dy: 1)
         NSColor.secondaryLabelColor.set()
@@ -288,11 +293,11 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
 
-        searchField.placeholderString = "搜索应用…"
+        searchField.placeholderString = L10n.t("搜索应用…")
         searchField.font = .systemFont(ofSize: 13)
         searchField.controlSize = .large
         searchField.sendsSearchStringImmediately = true
-        searchField.setAccessibilityLabel("搜索应用")
+        searchField.setAccessibilityLabel(L10n.t("搜索应用"))
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
@@ -309,17 +314,17 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
         pageLabel.onNext = { [weak self] in self?.onNextPage?() }
         addSubview(pageLabel)
 
-        fullscreenButton.toolTip = "全屏 / 退出全屏"
+        fullscreenButton.toolTip = L10n.t("全屏 / 退出全屏")
         fullscreenButton.target = self
         fullscreenButton.action = #selector(greenClicked)
         addSubview(fullscreenButton)
 
-        refreshButton.toolTip = "重新扫描应用"
+        refreshButton.toolTip = L10n.t("重新扫描应用")
         refreshButton.target = self
         refreshButton.action = #selector(refreshClicked)
         addSubview(refreshButton)
 
-        settingsButton.toolTip = "设置"
+        settingsButton.toolTip = L10n.t("设置")
         settingsButton.target = self
         settingsButton.action = #selector(settingsClicked)
         addSubview(settingsButton)
@@ -369,6 +374,18 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
 
     func setPage(_ page: Int, of total: Int) {
         pageLabel.stringValue = "\(page + 1) / \(max(total, 1))"
+    }
+
+    /// 应用（或切换）界面语言：刷新占位符、提示与辅助功能标签
+    func applyLanguage() {
+        searchField.placeholderString = L10n.t("搜索应用…")
+        searchField.setAccessibilityLabel(L10n.t("搜索应用"))
+        fullscreenButton.toolTip = L10n.t("全屏 / 退出全屏")
+        refreshButton.toolTip = L10n.t("重新扫描应用")
+        settingsButton.toolTip = L10n.t("设置")
+        traffic.applyLanguage()
+        pageLabel.setAccessibilityLabel(L10n.t("设置"))
+        needsLayout = true
     }
 
     /// 程序化清空搜索框：同时重置去重缓存，否则下次输入相同关键词会被误判为重复而不触发搜索

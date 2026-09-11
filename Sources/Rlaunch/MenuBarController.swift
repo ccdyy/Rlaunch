@@ -1,4 +1,5 @@
 import Cocoa
+import RlaunchCore
 
 /// 菜单栏状态项：
 /// - **左键点击**：直接显示 / 收起 Rlaunch 的「小屏」窗口化界面，不再弹出菜单；
@@ -24,25 +25,30 @@ final class MenuBarController: NSObject {
             if let image = AppIcon.menuBar {
                 button.image = image
             }
-            button.toolTip = "Rlaunch：点击打开 / 收起，右键查看更多"
             button.target = self
             button.action = #selector(statusItemClicked(_:))
             // 同时接收左右键抬起事件，左键走直开、右键走菜单
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        applyLanguage()
+    }
+
+    /// 应用（或切换）界面语言：重建菜单并刷新提示
+    func applyLanguage() {
+        statusItem.button?.toolTip = L10n.t("Rlaunch：点击打开 / 收起，右键查看更多")
 
         let menu = NSMenu()
-        let toggleItem = NSMenuItem(title: "显示 / 隐藏 Rlaunch", action: #selector(toggleAction), keyEquivalent: "")
+        let toggleItem = NSMenuItem(title: L10n.t("显示 / 隐藏 Rlaunch"), action: #selector(toggleAction), keyEquivalent: "")
         toggleItem.target = self
         menu.addItem(toggleItem)
 
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(settingsAction), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: L10n.t("设置…"), action: #selector(settingsAction), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "退出 Rlaunch", action: #selector(quitAction), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: L10n.t("退出 Rlaunch"), action: #selector(quitAction), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 

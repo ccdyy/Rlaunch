@@ -164,6 +164,21 @@ func testConfigStore() throws {
     check(frameLoaded.windowWidth == 1024 && frameLoaded.windowHeight == 720,
           "窗口尺寸往返一致")
 
+    // 语言设置往返 + 旧配置默认
+    var langCfg = cfg
+    langCfg.language = .en
+    check(ConfigStore.save(langCfg), "保存语言配置")
+    check(ConfigStore.load().language == .en, "语言设置往返一致")
+
+    // 直接解码带 language 的 JSON（对应"配置文件里写好语言后启动"的场景）
+    let langJSON = #"{"language": "en"}"#
+    if let decodedLang = try? JSONDecoder().decode(AppConfig.self, from: langJSON.data(using: .utf8)!) {
+        check(decodedLang.language == .en, "JSON 中的 language 字段可正确解码")
+    } else {
+        check(false, "带 language 的配置可正常解码")
+    }
+    check(AppConfig.defaults.language == .zhHans, "默认语言为简体中文")
+
     check(ConfigStore.save(cfg), "恢复默认配置")
 
     // 隐藏应用：往返 + 过滤 + 旧配置容错
@@ -215,9 +230,163 @@ func testConfigStore() throws {
         check(decoded.windowX == nil && decoded.windowY == nil,
               "旧配置无窗口位置时保持 nil（首启居中）")
         check(decoded.hiddenAppPaths.isEmpty, "旧配置无隐藏列表时默认为空")
+        check(decoded.language == .zhHans, "旧配置无语言字段时默认为简体中文")
     } else {
         check(false, "旧格式配置可正常解码（缺新字段不崩溃）")
     }
+}
+
+// MARK: - 边界橡皮筋
+
+func testElasticScroll() {
+    print("ElasticScroll:")
+    let limit: CGFloat = 96
+    let maxX: CGFloat = 2000
+
+    check(ElasticScroll.displayedOrigin(raw: 500, maxX: maxX, limit: limit) == 500, "区间内 1:1 跟手")
+    check(ElasticScroll.displayedOrigin(raw: 0, maxX: maxX, limit: limit) == 0, "左边界处无偏移")
+    check(ElasticScroll.displayedOrigin(raw: maxX, maxX: maxX, limit: limit) == maxX, "右边界处无偏移")
+
+    // 边界连续：刚越界时几乎不压缩
+    let justOver = ElasticScroll.displayedOrigin(raw: maxX + 1, maxX: maxX, limit: limit)
+    check(abs(justOver - (maxX + 1)) < 0.02, "越过边界的瞬间连续（无跳变）")
+    let justUnderLeft = ElasticScroll.displayedOrigin(raw: -1, maxX: maxX, limit: limit)
+    check(abs(justUnderLeft - (-1)) < 0.02, "左边界外侧同样连续")
+
+    // 阻尼：越拉越沉，且始终不超过 limit
+    let d60 = maxX + ElasticScroll.rubberBand(60, limit: limit)
+    let d200 = maxX + ElasticScroll.rubberBand(200, limit: limit)
+    let d4000 = maxX + ElasticScroll.rubberBand(4000, limit: limit)
+    check(d60 < maxX + 60, "越界位移被压缩（拖 60pt 只走 \(Int(d60 - maxX))pt）")
+    check(d200 > d60 && d4000 > d200, "拉得越远位移越大")
+    check(d4000 - maxX < limit, "越界位移不超过上限 \(Int(limit))pt")
+
+    // 单调性
+    var monotonic = true
+    var previous = ElasticScroll.displayedOrigin(raw: 0, maxX: maxX, limit: limit)
+    for raw in stride(from: CGFloat(10), through: 3000, by: 10) {
+        let current = ElasticScroll.displayedOrigin(raw: raw, maxX: maxX, limit: limit)
+        if current < previous { monotonic = false; break }
+        previous = current
+    }
+    check(monotonic, "位移随手指移动单调不减")
+
+    check(ElasticScroll.rubberBand(0, limit: limit) == 0, "零位移不产生阻尼偏移")
+    check(ElasticScroll.rubberBand(100, limit: 0) == 0, "上限为 0 时退化为硬边界")
+}
+
+// MARK: - 设置面板持久化合并
+
+/// 回归：设置面板曾经手写字段清单，漏掉 language / hiddenAppPaths，
+/// 导致「切换语言」「恢复隐藏应用」写不进配置文件（界面看起来"没生效"）。
+func testApplySettings() {
+    print("ApplySettings:")
+
+    var disk = AppConfig.defaults          // 磁盘上：主窗口负责的字段
+    disk.folders = [FolderConfig(id: "f1", name: "保留的文件夹", appPaths: ["/a.app"])]
+    disk.itemOrder = ["folder:f1"]
+    disk.pageOrders = [["folder:f1"]]
+    disk.windowWidth = 1234
+    disk.windowX = 11
+    disk.windowY = 22
+    disk.hideOnLaunch = false
+
+    var panel = AppConfig.defaults         // 设置面板负责的字段（全部改成非默认值）
+    panel.scanPaths = ["/Custom"]
+    panel.recursionDepth = 5
+    panel.theme = .light
+    panel.language = .en
+    panel.backgroundImagePath = "/tmp/bg.png"
+    panel.bgOpacity = 0.42
+    panel.bgBlur = 33
+    panel.columns = 9
+    panel.rows = 4
+    panel.columnSpacing = 31
+    panel.rowSpacing = 32
+    panel.fullscreenSpacingScale = 2.2
+    panel.iconSize = 96
+    panel.hotKeyEnabled = true
+    panel.hotKeyKeyCode = 49
+    panel.hotKeyModifiers = 256
+    panel.pinchEnabled = false
+    panel.pinchThreshold = 1.4
+    panel.launchAtLogin = true
+    panel.hiddenAppPaths = ["/hidden.app"]
+
+    var merged = disk
+    merged.applySettings(from: panel)
+
+    check(merged.language == .en, "语言会被持久化（曾漏掉导致切换无效）")
+    check(merged.hiddenAppPaths == ["/hidden.app"], "隐藏应用列表会被持久化（曾漏掉导致恢复无效）")
+    check(merged.theme == .light && merged.bgOpacity == 0.42 && merged.bgBlur == 33, "外观设置会被持久化")
+    check(merged.columns == 9 && merged.rows == 4 && merged.iconSize == 96, "网格设置会被持久化")
+    check(merged.columnSpacing == 31 && merged.rowSpacing == 32 && merged.fullscreenSpacingScale == 2.2,
+          "间距设置会被持久化")
+    check(merged.scanPaths == ["/Custom"] && merged.recursionDepth == 5, "扫描设置会被持久化")
+    check(merged.hotKeyEnabled && merged.hotKeyKeyCode == 49 && merged.hotKeyModifiers == 256,
+          "快捷键设置会被持久化")
+    check(merged.pinchEnabled == false && merged.pinchThreshold == 1.4, "捏合设置会被持久化")
+    check(merged.launchAtLogin, "开机启动会被持久化")
+    check(merged.backgroundImagePath == "/tmp/bg.png", "背景图设置会被持久化")
+
+    check(merged.folders.first?.name == "保留的文件夹", "文件夹由主窗口负责，不被设置面板覆盖")
+    check(merged.pageOrders == [["folder:f1"]] && merged.itemOrder == ["folder:f1"],
+          "分页编排由主窗口负责，不被覆盖")
+    check(merged.windowX == 11 && merged.windowY == 22 && merged.windowWidth == 1234,
+          "窗口位置与尺寸由主窗口负责，不被覆盖")
+    check(merged.hideOnLaunch == false, "hideOnLaunch 不由设置面板覆盖")
+}
+
+// MARK: - 本地化
+
+func testL10n() {
+    print("L10n:")
+
+    // 默认简体中文：直接返回原文
+    L10n.setLanguage(.zhHans)
+    check(L10n.t("设置") == "设置", "中文下取译文返回原文")
+    check(L10n.f("共 %d 个应用", 3) == "共 3 个应用", "中文下格式化文案正常")
+
+    // 英文
+    L10n.setLanguage(.en)
+    check(L10n.t("设置") == "Settings", "英文下取译文命中英文表")
+    check(L10n.t("文件夹") == "Folder", "条目文案可翻译")
+    check(L10n.f("共 %d 个应用", 3) == "3 apps", "英文下格式化文案正常")
+    check(L10n.f("最多只能添加 %d 个", 10) == "You can select up to 10 items", "英文下 %d 占位替换正确")
+    check(L10n.f("「%@」已不存在，正在重新扫描…", "Foo") == "“Foo” no longer exists — rescanning…",
+          "英文下 %@ 占位替换正确")
+
+    // 未翻译的键回退到中文，而不是空白或 key
+    check(L10n.t("这是一条尚未翻译的文案") == "这是一条尚未翻译的文案", "缺失译文时回退中文")
+
+    // 反查依赖英文值唯一，否则「切换语言时就地刷新」会翻错
+    var englishValues: [String: String] = [:]
+    var ambiguous: [String] = []
+    for (key, value) in L10n.english {
+        if let existing = englishValues[value], existing != key { ambiguous.append(value) }
+        englishValues[value] = key
+    }
+    check(ambiguous.isEmpty, "英文译文一一对应（反查无歧义）\(ambiguous.isEmpty ? "" : "：" + ambiguous.joined(separator: ", "))")
+
+    // 就地刷新：已知译文可反查回键并切换到目标语言
+    L10n.setLanguage(.zhHans)
+    check(L10n.retranslate("Settings") == "设置", "英文→中文可反查")
+    L10n.setLanguage(.en)
+    check(L10n.retranslate("设置") == "Settings", "中文→英文可反查")
+    check(L10n.retranslate("Light") == "Light", "已是目标语言时保持不变")
+    check(L10n.retranslate("Safari") == "Safari", "非文案内容原样保留")
+    check(L10n.retranslate("100%") == "100%", "数值等动态文本不受影响")
+    check(L10n.retranslate("") == "", "空字符串安全")
+
+    // 英文表不得有重复键（字典字面量重复会直接崩溃，这里用元组表 + 自测守护）
+    check(L10n.duplicateKeys.isEmpty, "英文文案表无重复键\(L10n.duplicateKeys.isEmpty ? "" : "：" + L10n.duplicateKeys.joined(separator: ", "))")
+
+    // 语言枚举
+    check(AppLanguage.allCases.count == 2, "提供两种语言")
+    check(AppLanguage.allCases.first == .zhHans, "默认语言为简体中文")
+    check(AppLanguage(rawValue: "en") == .en, "语言持久化原语正确")
+
+    L10n.setLanguage(.zhHans)
 }
 
 // MARK: - 版本信息
@@ -401,6 +570,9 @@ func testPageComposer() {
 
 do {
     testFuzzySearch()
+    testL10n()
+    testApplySettings()
+    testElasticScroll()
     testAppVersion()
     testGridPacker()
     testPageComposer()

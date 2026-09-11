@@ -34,16 +34,16 @@ final class TrayItemView: NSView {
         case .app(let info):
             iconView.frame = bounds
             iconView.image = IconCache.shared.icon(for: info.path)
-            toolTip = "\(info.name)\n点击移除出中转站"
+            toolTip = L10n.f("%@\n点击移除出中转站", info.name)
         case .folder(let folder):
             let iconH = size * 0.58
             let iconY = size - iconH - 6
             iconView.frame = NSRect(x: (size - iconH) / 2, y: iconY, width: iconH, height: iconH)
 
-            let sym = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: "文件夹")?
+            let sym = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: L10n.t("文件夹"))?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: iconH * 0.85, weight: .medium))
             iconView.image = sym
-            toolTip = "\(folder.name) (文件夹)\n点击移除出中转站"
+            toolTip = L10n.f("%@ (文件夹)\n点击移除出中转站", folder.name)
 
             folderLabel.font = .systemFont(ofSize: 10, weight: .bold)
             folderLabel.alignment = .center
@@ -190,7 +190,7 @@ final class SelectionTrayView: NSView {
         closeButton.title = "✕"
         closeButton.font = .systemFont(ofSize: 12, weight: .bold)
         closeButton.contentTintColor = .secondaryLabelColor
-        closeButton.toolTip = "清空并退出多选"
+        closeButton.toolTip = L10n.t("清空并退出多选")
         closeButton.target = self
         closeButton.action = #selector(cancelClicked)
         backgroundCard.addSubview(closeButton)
@@ -204,9 +204,9 @@ final class SelectionTrayView: NSView {
         backgroundCard.addSubview(scrollView)
 
         // 操作主按钮（放本页 / 放此文件夹）
-        setupActionButton(placeButton, title: "放本页", bg: NSColor.controlAccentColor, action: #selector(placeClicked))
+        setupActionButton(placeButton, title: L10n.t("放本页"), bg: NSColor.controlAccentColor, action: #selector(placeClicked))
         // 新建文件夹按钮（≥2个App时显示）
-        setupActionButton(createFolderButton, title: "建文件夹", bg: NSColor.systemGreen, action: #selector(createFolderClicked))
+        setupActionButton(createFolderButton, title: L10n.t("建文件夹"), bg: NSColor.systemGreen, action: #selector(createFolderClicked))
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
@@ -264,7 +264,7 @@ final class SelectionTrayView: NSView {
 
     func setTargetMode(isFolder: Bool) {
         self.isFolderTarget = isFolder
-        let title = isFolder ? "放文件夹" : "放本页"
+        let title = isFolder ? L10n.t("放文件夹") : L10n.t("放本页")
         placeButton.attributedTitle = NSAttributedString(string: title, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
             .foregroundColor: NSColor.white

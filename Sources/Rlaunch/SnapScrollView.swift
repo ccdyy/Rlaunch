@@ -1,4 +1,24 @@
 import Cocoa
+import RlaunchCore
+
+/// 允许有限越界的裁剪视图。
+///
+/// `NSClipView` 默认把 bounds 严格夹在文档范围内，越界位移会被静默丢弃；
+/// 更麻烦的是**回弹动画也会因此失效**：起点在合法范围之外时，动画会被瞬间夹回终点，
+/// 表现为"啪"地一下归位（实测轨迹全是终点值，根本没有过渡帧）。
+/// 这里放开一个有界的越界区间，橡皮筋与回弹才能同时正常工作。
+final class ElasticClipView: NSClipView {
+    /// 允许的最大越界距离（应不小于橡皮筋上限）
+    var overscrollLimit: CGFloat = 120
+
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        guard let documentView else { return proposedBounds }
+        let maxX = max(0, documentView.frame.width - bounds.width)
+        var adjusted = proposedBounds
+        adjusted.origin.x = min(max(adjusted.origin.x, -overscrollLimit), maxX + overscrollLimit)
+        return adjusted
+    }
+}
 
 /// 横向分页滚动视图：拖动时 1:1 跟手，松手后吸附到最近整页。
 final class SnapScrollView: NSScrollView {
@@ -38,7 +58,18 @@ final class SnapScrollView: NSScrollView {
         hasHorizontalScroller = false
         scrollerStyle = .overlay
         usesPredominantAxisScrolling = true
-        contentView.postsBoundsChangedNotifications = true
+
+        let clip = ElasticClipView(frame: bounds)
+        clip.autoresizingMask = [.width, .height]
+        clip.overscrollLimit = maxOverscroll + 24
+        contentView = clip
+        clip.postsBoundsChangedNotifications = true
+        // 必须在替换 contentView **之后**再关背景：
+        // 新建的 NSClipView 默认 drawsBackground = true，会用 controlBackgroundColor
+        // 铺满整块可视区，把窗口的玻璃背景整片盖住（表现为顶栏以下全黑）；
+        // 而且赋值 contentView 还会把滚动视图自身的 drawsBackground 一并带回 true。
+        clip.drawsBackground = false
+        drawsBackground = false
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -50,14 +81,16 @@ final class SnapScrollView: NSScrollView {
     // MARK: 滚动与吸附
 
     override func scrollWheel(with event: NSEvent) {
-        contentView.layer?.removeAllAnimations()
-        snapTimer?.invalidate()
-
-        // 系统惯性不参与跟手滚动，仅在惯性结束时收敛吸附
+        // 系统惯性不参与跟手滚动，仅在惯性结束时收敛吸附。
+        // 注意要在清除动画之前返回，否则松手后紧跟着的惯性事件会把
+        // 刚开始的吸附/回弹动画立刻打断，看起来像卡在越界位置不动。
         if !event.momentumPhase.isEmpty {
             if event.momentumPhase.contains(.ended) { snap() }
             return
         }
+
+        contentView.layer?.removeAllAnimations()
+        snapTimer?.invalidate()
 
         if event.phase.contains(.began) {
             isTouchScrolling = true
@@ -103,13 +136,25 @@ final class SnapScrollView: NSScrollView {
         velocityX = velocityX * 0.55 + instant * 0.45
     }
 
-    /// AppKit 惯例：bounds.origin 与 scrollingDelta 反向（减 delta 才是跟手方向）
+    /// 到达首/尾页后继续拖动时的最大弹性位移
+    private let maxOverscroll: CGFloat = 96
+    /// 未阻尼的原始滚动位置（手指总位移），仅在 [0, maxX] 之外才做橡胶筋压缩
+    private var rawOriginX: CGFloat = 0
+    private var isRawTracking = false
+
+    /// AppKit 惯例：bounds.origin 与 scrollingDelta 反向（减 delta 才是跟手方向）。
+    /// 超出首/尾页边界后不硬停，而是按渐近阻尼继续位移，松手再弹回，形成橡皮筋手感。
     private func scrollHorizontally(by delta: CGFloat) {
         let pageW = max(contentView.bounds.width, 1)
         let maxX = CGFloat(max(pageCount - 1, 0)) * pageW
-        var x = contentView.bounds.origin.x - delta
-        x = min(max(x, 0), maxX)
-        contentView.setBoundsOrigin(NSPoint(x: x, y: 0))
+        if !isRawTracking {
+            // 以当前所在的有效位置为起点，避免从回弹动画中途接续时产生跳变
+            rawOriginX = min(max(contentView.bounds.origin.x, 0), maxX)
+            isRawTracking = true
+        }
+        rawOriginX -= delta
+        let displayed = ElasticScroll.displayedOrigin(raw: rawOriginX, maxX: maxX, limit: maxOverscroll)
+        contentView.setBoundsOrigin(NSPoint(x: displayed, y: 0))
     }
 
     private func scheduleSnap(delay: TimeInterval) {
@@ -123,6 +168,7 @@ final class SnapScrollView: NSScrollView {
 
     func snap() {
         snapTimer?.invalidate()
+        isRawTracking = false
         scrollToPage(snapTargetPage(), animated: true)
     }
 
@@ -145,28 +191,67 @@ final class SnapScrollView: NSScrollView {
 
     func scrollToPage(_ page: Int, animated: Bool) {
         let clamped = min(max(page, 0), pageCount - 1)
-        let targetX = CGFloat(clamped) * max(contentView.bounds.width, 1)
+        let pageW = max(contentView.bounds.width, 1)
+        let targetX = CGFloat(clamped) * pageW
         let currentX = contentView.bounds.origin.x
+        isRawTracking = false
         if currentPage != clamped {
             currentPage = clamped
             onPageChanged?(clamped)
         }
         guard abs(currentX - targetX) > 0.5 else { return }
-        if animated {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.15
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                contentView.animator().setBoundsOrigin(NSPoint(x: targetX, y: 0))
-            } completionHandler: { [weak self] in
-                guard let self else { return }
-                let actual = self.nearestPage()
-                if self.currentPage != actual {
-                    self.currentPage = actual
-                    self.onPageChanged?(actual)
-                }
-            }
-        } else {
+
+        let maxX = CGFloat(max(pageCount - 1, 0)) * pageW
+        let isBouncingBack = currentX < -0.5 || currentX > maxX + 0.5
+
+        guard animated else {
             contentView.setBoundsOrigin(NSPoint(x: targetX, y: 0))
+            return
+        }
+
+        guard isBouncingBack else {
+            // 普通翻页：轻快吸附
+            animateOrigin(to: targetX, duration: 0.15, timing: CAMediaTimingFunction(name: .easeOut))
+            return
+        }
+
+        settleToEdge(from: currentX, to: targetX)
+    }
+
+    /// 越界回弹：**一次到位**地靠边停住。
+    ///
+    /// 曾经做过"回弹 → 冲过边界 → 再落定"的两段弹簧，但那一来会越过边缘再弹一下，
+    /// 观感是松散地弹两次；这里改成单段：起始速度最大，随后平滑衰减到 0，正好停在边界上。
+    /// 时长随越界距离小幅增长，短距离不会拖沓，长距离也不会显得急促。
+    private func settleToEdge(from currentX: CGFloat, to targetX: CGFloat) {
+        let distance = abs(currentX - targetX)
+        let duration = 0.34 + min(0.20, distance / 500)
+        // 缓出曲线：起步即最快，末尾速度为 0（速度逐渐变小、贴边停住）
+        animateOrigin(to: targetX,
+                      duration: duration,
+                      timing: CAMediaTimingFunction(controlPoints: 0.22, 0.68, 0.32, 1.0)) { [weak self] in
+            self?.syncCurrentPage()
+        }
+    }
+
+    private func animateOrigin(to x: CGFloat,
+                               duration: TimeInterval,
+                               timing: CAMediaTimingFunction,
+                               completion: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            ctx.timingFunction = timing
+            contentView.animator().setBoundsOrigin(NSPoint(x: x, y: 0))
+        } completionHandler: {
+            completion?()
+        }
+    }
+
+    private func syncCurrentPage() {
+        let actual = nearestPage()
+        if currentPage != actual {
+            currentPage = actual
+            onPageChanged?(actual)
         }
     }
 

@@ -1,4 +1,5 @@
 import Cocoa
+import RlaunchCore
 
 /// 系统玻璃背景的运行时适配层。
 ///
@@ -26,7 +27,7 @@ enum SystemGlass {
 
     /// 当前实际使用的渲染方式名称（用于设置界面展示 / 日志）
     static var rendererName: String {
-        isNativeGlassAvailable ? "Liquid Glass（macOS 26 原生）" : "毛玻璃（NSVisualEffectView）"
+        isNativeGlassAvailable ? L10n.t("Liquid Glass（macOS 26 原生）") : L10n.t("毛玻璃（NSVisualEffectView）")
     }
 
     // MARK: - 创建

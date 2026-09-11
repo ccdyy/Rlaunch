@@ -14,10 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let config = ConfigStore.load()
         ThemeManager.current = config.theme
-        NSLog("Rlaunch: 背景渲染方式 = %@", SystemGlass.rendererName)
+        L10n.setLanguage(config.language)
+        NSLog("Rlaunch: 背景渲染方式 = %@，界面语言 = %@", SystemGlass.rendererName, L10n.language.rawValue)
 
         mainController = MainWindowController(config: config) // 内部已启动扫描
         mainController.show()
+
 
         menuBar = MenuBarController()
         menuBar.setup(
@@ -67,8 +69,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var appliedLanguage: AppLanguage?
+
     @objc private func configDidChange() {
-        applyMonitors(config: ConfigStore.load())
+        let config = ConfigStore.load()
+        applyMonitors(config: config)
+        // 语言变化时重建菜单栏菜单（其标题在创建时固定）
+        if appliedLanguage != config.language {
+            appliedLanguage = config.language
+            L10n.setLanguage(config.language)
+            menuBar?.applyLanguage()
+        }
     }
 
     @objc private func appDidBecomeActive() {

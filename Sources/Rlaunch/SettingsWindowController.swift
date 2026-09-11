@@ -7,7 +7,11 @@ import RlaunchCore
 // MARK: - 统一表单样式规范
 
 private enum FormMetrics {
-    static let labelWidth: CGFloat = 80          // 标签统一固定宽度（右对齐）
+    /// 标签列宽：取「能放下最长英文标签」的固定值。
+    /// 不按语言动态变化——标签的宽度约束在构建时就固定了，就地切换语言时改不到，
+    /// 会导致英文被截断（如 "Launch at Log…"）；固定宽度还避免了切换时整片表单横向跳动。
+    static let labelWidth: CGFloat = 118
+
     static let controlSpacing: CGFloat = 12      // 标签与控件间距
     static let sliderWidth: CGFloat = 210        // 滑块统一定宽
     static let valueWidth: CGFloat = 46          // 数值展示标签统一定宽
@@ -16,11 +20,16 @@ private enum FormMetrics {
     static let sectionSpacing: CGFloat = 18      // 分组垂直间距
 }
 
+/// 表单标签。
+///
+/// 左对齐而非右对齐：右对齐时标签的左边缘参差不齐，又和分组标题各占一个缩进层级，
+/// 整页看起来像"两层楼"。左对齐后「分组标题」与「行标签」共用同一条左边界，
+/// 右侧控件（含说明）共用第二条边界，视觉上只剩干净的两列。
 fileprivate func makeFormLabel(_ text: String) -> NSTextField {
     let l = NSTextField(labelWithString: text)
     l.font = .systemFont(ofSize: 13, weight: .regular)
     l.textColor = .secondaryLabelColor
-    l.alignment = .right
+    l.alignment = .left
     l.widthAnchor.constraint(equalToConstant: FormMetrics.labelWidth).isActive = true
     l.setContentHuggingPriority(.required, for: .horizontal)
     l.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -43,6 +52,12 @@ fileprivate func makeSectionHeader(_ title: String, isFirst: Bool = false) -> NS
     container.alignment = .leading
 
     if !isFirst {
+        // 分隔线上方留白，让分组之间有明确呼吸感，而不是紧贴上一行
+        let gap = NSView()
+        gap.translatesAutoresizingMaskIntoConstraints = false
+        gap.heightAnchor.constraint(equalToConstant: FormMetrics.sectionSpacing).isActive = true
+        container.addArrangedSubview(gap)
+
         let line = NSBox()
         line.boxType = .separator
         line.translatesAutoresizingMaskIntoConstraints = false
@@ -149,10 +164,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     // 外观
     private let themeControl = NSSegmentedControl(
-        labels: ["明亮", "深黑", "跟随系统"], trackingMode: .selectOne, target: nil, action: nil)
-    private let bgPathLabel = NSTextField(labelWithString: "默认（系统毛玻璃）")
-    private let chooseBgButton = NSButton(title: "选择图片…", target: nil, action: nil)
-    private let clearBgButton = NSButton(title: "清除", target: nil, action: nil)
+        labels: [L10n.t("明亮"), L10n.t("深黑"), L10n.t("跟随系统")], trackingMode: .selectOne, target: nil, action: nil)
+    private let bgPathLabel = NSTextField(labelWithString: L10n.t("默认（系统毛玻璃）"))
+    private let chooseBgButton = NSButton(title: L10n.t("选择图片…"), target: nil, action: nil)
+    private let clearBgButton = NSButton(title: L10n.t("清除"), target: nil, action: nil)
     private let opacitySlider = NSSlider(value: 0.85, minValue: 0.15, maxValue: 1.0, target: nil, action: nil)
     private let opacityValue = makeValueLabel()
     private let blurSlider = NSSlider(value: 0, minValue: 0, maxValue: 60, target: nil, action: nil)
@@ -176,52 +191,56 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // 应用扫描
     private let scanPathsContainer = NSView()
     private let scanRowsStack = NSStackView()
-    private let addPathButton = NSButton(title: "添加目录…", target: nil, action: nil)
+    private let addPathButton = NSButton(title: L10n.t("添加目录…"), target: nil, action: nil)
     private let hiddenPathsContainer = NSView()
     private let hiddenRowsStack = NSStackView()
     private let depthStepper: NSStepper = makeStepper(value: 3, min: 1, max: 6)
     private var depthBox: NumberStepperBox!
-    private let rescanButtonScanTab = NSButton(title: "立即重新扫描", target: nil, action: nil)
+    private let rescanButtonScanTab = NSButton(title: L10n.t("立即重新扫描"), target: nil, action: nil)
     private let rescanStatusScanTab = NSTextField(labelWithString: "")
 
     // 快捷键与手势
     private let hotKeySwitch = NSSwitch()
-    private let hotKeySwitchLabel = NSTextField(labelWithString: "启用全局快捷键唤起")
+    private let hotKeySwitchLabel = NSTextField(labelWithString: L10n.t("启用全局快捷键唤起"))
     private let hotKeyBadge = NSView()
-    private let hotKeyLabel = NSTextField(labelWithString: "未设置")
-    private let recordButton = NSButton(title: "录制快捷键…", target: nil, action: nil)
-    private let clearShortcutButton = NSButton(title: "清除", target: nil, action: nil)
+    private let hotKeyLabel = NSTextField(labelWithString: L10n.t("未设置"))
+    private let recordButton = NSButton(title: L10n.t("录制快捷键…"), target: nil, action: nil)
+    private let clearShortcutButton = NSButton(title: L10n.t("清除"), target: nil, action: nil)
     private let hotKeyControlRow = NSStackView()
 
     private let pinchSwitch = NSSwitch()
-    private let pinchSwitchLabel = NSTextField(labelWithString: "四指/五指捏合：打开并全屏")
+    private let pinchSwitchLabel = NSTextField(labelWithString: L10n.t("四指/五指捏合：打开并全屏"))
     private let pinchSlider = NSSlider(value: 0.7, minValue: 0.3, maxValue: 2.0, target: nil, action: nil)
     private let pinchValue = makeValueLabel()
     private let pinchControlRow = NSStackView()
 
-    private let axStatusLabel = NSTextField(labelWithString: "辅助功能：未授权")
-    private let axButton = NSButton(title: "打开权限设置…", target: nil, action: nil)
-    private let trackpadButton = NSButton(title: "触控板手势设置…", target: nil, action: nil)
+    private let axStatusLabel = NSTextField(labelWithString: L10n.t("辅助功能：未授权"))
+    private let axButton = NSButton(title: L10n.t("打开权限设置…"), target: nil, action: nil)
+    private let trackpadButton = NSButton(title: L10n.t("触控板手势设置…"), target: nil, action: nil)
 
     // 通用
+    private let languageControl = NSSegmentedControl(
+        labels: AppLanguage.allCases.map { $0.displayName }, trackingMode: .selectOne, target: nil, action: nil)
     private let launchAtLoginSwitch = NSSwitch()
-    private let launchAtLoginLabel = NSTextField(labelWithString: "登录时自动启动 Rlaunch")
+    private let launchAtLoginLabel = NSTextField(labelWithString: L10n.t("登录时自动启动 Rlaunch"))
     private let launchAtLoginStatus = NSTextField(labelWithString: "")
-    private let rescanButtonGeneralTab = NSButton(title: "重新扫描应用", target: nil, action: nil)
+    private let rescanButtonGeneralTab = NSButton(title: L10n.t("重新扫描应用"), target: nil, action: nil)
     private let rescanStatusGeneralTab = NSTextField(labelWithString: "")
-    private let openConfigButton = NSButton(title: "打开配置目录", target: nil, action: nil)
-    private let exportConfigButton = NSButton(title: "导出…", target: nil, action: nil)
-    private let importConfigButton = NSButton(title: "导入…", target: nil, action: nil)
-    private let resetButton = NSButton(title: "恢复默认设置", target: nil, action: nil)
-    private let resetLayoutButton = NSButton(title: "重置桌面布局", target: nil, action: nil)
+    private let openConfigButton = NSButton(title: L10n.t("打开配置目录"), target: nil, action: nil)
+    private let exportConfigButton = NSButton(title: L10n.t("导出…"), target: nil, action: nil)
+    private let importConfigButton = NSButton(title: L10n.t("导入…"), target: nil, action: nil)
+    private let resetButton = NSButton(title: L10n.t("恢复默认设置"), target: nil, action: nil)
+    private let resetLayoutButton = NSButton(title: L10n.t("重置桌面布局"), target: nil, action: nil)
     private let resetStatusLabel = NSTextField(labelWithString: "")
     private var isConfirmingReset = false
+    /// 「当前背景渲染方式」提示（含格式参数，无法反查，需单独刷新）
+    private var rendererHintLabel: NSTextField?
     private var isConfirmingLayoutReset = false
 
     // 关于
     private let appNameLabel = NSTextField(labelWithString: "Rlaunch")
     private let githubLinkButton = LinkButton(url: AppVersion.repositoryURL)
-    private let copyRepoButton = NSButton(title: "复制地址", target: nil, action: nil)
+    private let copyRepoButton = NSButton(title: L10n.t("复制地址"), target: nil, action: nil)
     private let copyRepoFeedback = NSTextField(labelWithString: "")
 
     // 窗口元素
@@ -237,7 +256,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var contentStacks: [NSStackView] = []
     private var currentTab = 0
     private let headerGrip = NSView()
-    private let headerTitle = NSTextField(labelWithString: "Rlaunch 设置")
+    private let headerTitle = NSTextField(labelWithString: L10n.t("Rlaunch 设置"))
     private let closeButton = CloseButton()
 
     // MARK: - 布局与对齐核心辅助
@@ -260,16 +279,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return formRow(label: label, control: slider, trailing: valueLabel)
     }
 
+    private static var rendererHintText: String {
+        L10n.f("当前背景渲染方式：%@。", L10n.t(SystemGlass.rendererName))
+    }
+
     /// 说明提示行：左侧自动留出标签列的宽度，确保提示内容与右侧控件列绝对对齐
     private func formHintRow(_ text: String, textColor: NSColor = .secondaryLabelColor) -> NSStackView {
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.widthAnchor.constraint(equalToConstant: FormMetrics.labelWidth).isActive = true
-
         let hint = NSTextField(wrappingLabelWithString: text)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = textColor
         hint.preferredMaxLayoutWidth = FormMetrics.controlAreaWidth
+        return formHintRow(hint)
+    }
+
+    private func formHintRow(_ hint: NSTextField) -> NSStackView {
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.widthAnchor.constraint(equalToConstant: FormMetrics.labelWidth).isActive = true
 
         let s = NSStackView(views: [spacer, hint])
         s.orientation = .horizontal
@@ -439,7 +465,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Tab 构建
 
     private func buildTabsAndPages() {
-        let titles = ["外观", "网格", "应用扫描", "快捷键", "通用"]
+        // 标签顺序：通用置顶，「关于」独立成页放在最后
+        let titles = [L10n.t("通用"), L10n.t("外观"), L10n.t("网格"),
+                      L10n.t("应用扫描"), L10n.t("快捷键"), L10n.t("关于")]
         for (i, title) in titles.enumerated() {
             let btn = TabButton(title: title)
             btn.onSelect = { [weak self] in self?.selectTab(i) }
@@ -458,16 +486,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             containerView.addSubview(page)
         }
 
-        buildAppearancePage(contentStacks[0])
-        buildGridPage(contentStacks[1])
-        buildScanPage(contentStacks[2])
-        buildShortcutPage(contentStacks[3])
-        buildGeneralPage(contentStacks[4])
+        buildGeneralPage(contentStacks[0])
+        buildAppearancePage(contentStacks[1])
+        buildGridPage(contentStacks[2])
+        buildScanPage(contentStacks[3])
+        buildShortcutPage(contentStacks[4])
+        buildAboutPage(contentStacks[5])
 
         // 注册常规配置变更事件
         let controls: [NSControl] = [themeControl, opacitySlider, blurSlider, columnsStepper,
                                      rowsStepper, columnSpacingSlider, rowSpacingSlider, fullscreenScaleSlider,
-                                     iconSizeSlider, depthStepper, pinchSlider, pinchSwitch, hotKeySwitch]
+                                     iconSizeSlider, depthStepper, pinchSlider, pinchSwitch, hotKeySwitch,
+                                     languageControl]
         for c in controls {
             c.target = self
             c.action = #selector(controlChanged)
@@ -478,8 +508,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: 1. 外观设置
     private func buildAppearancePage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader("界面样式", isFirst: true))
-        stack.addArrangedSubview(formRow(label: "主题模式", control: themeControl))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("界面样式"), isFirst: true))
+        stack.addArrangedSubview(formRow(label: L10n.t("主题模式"), control: themeControl))
 
         // 背景图控件组
         bgPathLabel.lineBreakMode = .byTruncatingMiddle
@@ -502,35 +532,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         bgControlRow.orientation = .horizontal
         bgControlRow.spacing = 8
         bgControlRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "背景图片", control: bgControlRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("背景图片"), control: bgControlRow))
 
         // 背景效果
-        stack.addArrangedSubview(makeSectionHeader("背景效果"))
-        stack.addArrangedSubview(sliderRow(label: "透明度", slider: opacitySlider, valueLabel: opacityValue))
-        stack.addArrangedSubview(sliderRow(label: "模糊程度", slider: blurSlider, valueLabel: blurValue))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("背景效果")))
+        stack.addArrangedSubview(sliderRow(label: L10n.t("透明度"), slider: opacitySlider, valueLabel: opacityValue))
+        stack.addArrangedSubview(sliderRow(label: L10n.t("模糊程度"), slider: blurSlider, valueLabel: blurValue))
 
         blurHintLabel.font = .systemFont(ofSize: 11)
         blurHintLabel.textColor = .tertiaryLabelColor
-        stack.addArrangedSubview(formHintRow("提示：高斯模糊仅在使用自定义背景图片时生效。"))
-        stack.addArrangedSubview(formHintRow("当前背景渲染方式：\(SystemGlass.rendererName)。"))
+        stack.addArrangedSubview(formHintRow(L10n.t("提示：高斯模糊仅在使用自定义背景图片时生效。")))
+        let rendererHint = NSTextField(wrappingLabelWithString: Self.rendererHintText)
+        rendererHint.font = .systemFont(ofSize: 11)
+        rendererHint.textColor = .secondaryLabelColor
+        rendererHint.preferredMaxLayoutWidth = FormMetrics.controlAreaWidth
+        rendererHintLabel = rendererHint
+        stack.addArrangedSubview(formHintRow(rendererHint))
     }
 
     // MARK: 2. 网格设置
     private func buildGridPage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader("布局规格", isFirst: true))
-        stack.addArrangedSubview(formRow(label: "列数", control: columnsBox))
-        stack.addArrangedSubview(formRow(label: "行数", control: rowsBox))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("布局规格"), isFirst: true))
+        stack.addArrangedSubview(formRow(label: L10n.t("列数"), control: columnsBox))
+        stack.addArrangedSubview(formRow(label: L10n.t("行数"), control: rowsBox))
 
-        stack.addArrangedSubview(makeSectionHeader("间距与尺寸"))
-        stack.addArrangedSubview(sliderRow(label: "列间距", slider: columnSpacingSlider, valueLabel: columnSpacingValue))
-        stack.addArrangedSubview(sliderRow(label: "行间距", slider: rowSpacingSlider, valueLabel: rowSpacingValue))
-        stack.addArrangedSubview(sliderRow(label: "全屏缩放", slider: fullscreenScaleSlider, valueLabel: fullscreenScaleValue))
-        stack.addArrangedSubview(sliderRow(label: "图标大小", slider: iconSizeSlider, valueLabel: iconSizeValue))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("间距与尺寸")))
+        stack.addArrangedSubview(sliderRow(label: L10n.t("列间距"), slider: columnSpacingSlider, valueLabel: columnSpacingValue))
+        stack.addArrangedSubview(sliderRow(label: L10n.t("行间距"), slider: rowSpacingSlider, valueLabel: rowSpacingValue))
+        stack.addArrangedSubview(sliderRow(label: L10n.t("全屏缩放"), slider: fullscreenScaleSlider, valueLabel: fullscreenScaleValue))
+        stack.addArrangedSubview(sliderRow(label: L10n.t("图标大小"), slider: iconSizeSlider, valueLabel: iconSizeValue))
     }
 
     // MARK: 3. 应用扫描设置
     private func buildScanPage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader("扫描目录", isFirst: true))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("扫描目录"), isFirst: true))
 
         // 目录列表容器（卡片样式）
         scanPathsContainer.wantsLayer = true
@@ -554,7 +589,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             scanRowsStack.bottomAnchor.constraint(equalTo: scanPathsContainer.bottomAnchor, constant: -6),
         ])
 
-        stack.addArrangedSubview(formRow(label: "目录列表", control: scanPathsContainer))
+        stack.addArrangedSubview(formRow(label: L10n.t("目录列表"), control: scanPathsContainer))
 
         // 添加目录按钮
         addPathButton.bezelStyle = .rounded
@@ -564,9 +599,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(formRow(label: "", control: addPathButton))
 
         // 递归层级
-        stack.addArrangedSubview(makeSectionHeader("扫描参数与操作"))
-        stack.addArrangedSubview(formRow(label: "递归层级", control: depthBox))
-        stack.addArrangedSubview(formHintRow("搜索应用时的最大目录深度（建议保持为 3）。"))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("扫描参数与操作")))
+        stack.addArrangedSubview(formRow(label: L10n.t("递归层级"), control: depthBox))
+        stack.addArrangedSubview(formHintRow(L10n.t("搜索应用时的最大目录深度（建议保持为 3）。")))
 
         // 重新扫描操作（整合至扫描面板）
         rescanButtonScanTab.bezelStyle = .rounded
@@ -580,7 +615,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scanActionRow.orientation = .horizontal
         scanActionRow.spacing = 10
         scanActionRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "应用索引", control: scanActionRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("应用索引"), control: scanActionRow))
 
         buildHiddenAppsSection(stack)
     }
@@ -588,7 +623,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: 3b. 已隐藏的应用
 
     private func buildHiddenAppsSection(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader("已隐藏的应用"))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("已隐藏的应用")))
 
         hiddenPathsContainer.wantsLayer = true
         hiddenPathsContainer.layer?.cornerRadius = 8
@@ -611,13 +646,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             hiddenRowsStack.bottomAnchor.constraint(equalTo: hiddenPathsContainer.bottomAnchor, constant: -6),
         ])
 
-        stack.addArrangedSubview(formRow(label: "隐藏列表", control: hiddenPathsContainer))
-        stack.addArrangedSubview(formHintRow("在启动台中右键应用选择「从启动台隐藏」后，可在这里恢复显示。"))
+        stack.addArrangedSubview(formRow(label: L10n.t("隐藏列表"), control: hiddenPathsContainer))
+        stack.addArrangedSubview(formHintRow(L10n.t("在启动台中右键应用选择「从启动台隐藏」后，可在这里恢复显示。")))
     }
 
     // MARK: 4. 快捷键与手势设置
     private func buildShortcutPage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader("全局快捷键", isFirst: true))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("全局快捷键"), isFirst: true))
 
         hotKeySwitch.controlSize = .small
         hotKeySwitchLabel.font = .systemFont(ofSize: 13)
@@ -625,7 +660,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         hotKeyToggleRow.orientation = .horizontal
         hotKeyToggleRow.spacing = 8
         hotKeyToggleRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "全局唤起", control: hotKeyToggleRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("全局唤起"), control: hotKeyToggleRow))
 
         // 快捷键按键显示胶囊
         hotKeyBadge.wantsLayer = true
@@ -662,10 +697,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         hotKeyControlRow.orientation = .horizontal
         hotKeyControlRow.spacing = 8
         hotKeyControlRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "快捷键", control: hotKeyControlRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("唤起快捷键"), control: hotKeyControlRow))
 
         // 触控板手势
-        stack.addArrangedSubview(makeSectionHeader("触控板手势"))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("触控板手势")))
 
         pinchSwitch.controlSize = .small
         pinchSwitchLabel.font = .systemFont(ofSize: 13)
@@ -673,17 +708,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         pinchToggleRow.orientation = .horizontal
         pinchToggleRow.spacing = 8
         pinchToggleRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "捏合唤起", control: pinchToggleRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("捏合唤起"), control: pinchToggleRow))
 
         pinchSlider.widthAnchor.constraint(equalToConstant: FormMetrics.sliderWidth).isActive = true
         pinchControlRow.setViews([pinchSlider, pinchValue], in: .leading)
         pinchControlRow.orientation = .horizontal
         pinchControlRow.spacing = FormMetrics.controlSpacing
         pinchControlRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "灵敏度", control: pinchControlRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("灵敏度"), control: pinchControlRow))
 
         // 权限与系统手势设置
-        stack.addArrangedSubview(makeSectionHeader("系统权限与手势"))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("系统权限与手势")))
 
         axStatusLabel.font = .systemFont(ofSize: 12, weight: .medium)
         axButton.bezelStyle = .rounded
@@ -694,21 +729,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         axRow.orientation = .horizontal
         axRow.spacing = 10
         axRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "辅助功能", control: axRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("辅助功能"), control: axRow))
 
         trackpadButton.bezelStyle = .rounded
         trackpadButton.controlSize = .small
         trackpadButton.target = self
         trackpadButton.action = #selector(openTrackpadSettings)
-        stack.addArrangedSubview(formRow(label: "触控板", control: trackpadButton))
+        stack.addArrangedSubview(formRow(label: L10n.t("触控板"), control: trackpadButton))
 
         stack.addArrangedSubview(formHintRow(
-            "手势说明：四指/五指捏合通过系统触摸点间距收缩算法识别（需要辅助功能权限）。若系统已授权仍无法使用，可在「辅助功能」中先移除 Rlaunch 再重新添加，并在「触控板手势设置」中检查是否被系统默认手势占用。"))
+            L10n.t("手势说明：四指/五指捏合通过系统触摸点间距收缩算法识别（需要辅助功能权限）。若系统已授权仍无法使用，可在「辅助功能」中先移除 Rlaunch 再重新添加，并在「触控板手势设置」中检查是否被系统默认手势占用。")))
     }
 
     // MARK: 5. 通用设置
     private func buildGeneralPage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader("系统启动", isFirst: true))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("语言"), isFirst: true))
+        stack.addArrangedSubview(formRow(label: L10n.t("语言"), control: languageControl))
+        stack.addArrangedSubview(formHintRow(L10n.t("切换语言后界面立即生效，无需重启。")))
+
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("系统启动")))
 
         launchAtLoginSwitch.controlSize = .small
         launchAtLoginSwitch.target = self
@@ -719,14 +758,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         loginRow.orientation = .horizontal
         loginRow.spacing = 8
         loginRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "开机启动", control: loginRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("开机启动"), control: loginRow))
 
         launchAtLoginStatus.font = .systemFont(ofSize: 11)
         launchAtLoginStatus.textColor = .secondaryLabelColor
         stack.addArrangedSubview(formRow(label: "", control: launchAtLoginStatus))
-        stack.addArrangedSubview(formHintRow("可在「系统设置 → 通用 → 登录项与扩展」中管理。"))
+        stack.addArrangedSubview(formHintRow(L10n.t("可在「系统设置 → 通用 → 登录项与扩展」中管理。")))
 
-        stack.addArrangedSubview(makeSectionHeader("应用维护"))
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("应用维护")))
 
         rescanButtonGeneralTab.bezelStyle = .rounded
         rescanButtonGeneralTab.target = self
@@ -739,7 +778,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         generalRescanRow.orientation = .horizontal
         generalRescanRow.spacing = 10
         generalRescanRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "应用索引", control: generalRescanRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("应用索引"), control: generalRescanRow))
 
         // 配置维护：打开配置目录 / 导出导入 / 恢复默认（二次点击确认，避免弹出会被全屏窗口遮挡的模态框）
         for button in [openConfigButton, exportConfigButton, importConfigButton, resetButton, resetLayoutButton] {
@@ -757,7 +796,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         fileRow.orientation = .horizontal
         fileRow.spacing = 8
         fileRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "配置文件", control: fileRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("配置文件"), control: fileRow))
 
         resetStatusLabel.font = .systemFont(ofSize: 11)
         resetStatusLabel.textColor = .systemOrange
@@ -766,20 +805,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         resetRow.orientation = .horizontal
         resetRow.spacing = 8
         resetRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "重置", control: resetRow))
+        stack.addArrangedSubview(formRow(label: L10n.t("重置"), control: resetRow))
 
-        buildAboutSection(stack)
     }
 
-    // MARK: 6. 关于
-    private func buildAboutSection(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader("关于"))
+    // MARK: 6. 关于（独立标签页）
+    private func buildAboutPage(_ stack: NSStackView) {
+        stack.addArrangedSubview(makeSectionHeader(L10n.t("关于"), isFirst: true))
 
         appNameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         appNameLabel.textColor = .labelColor
-        stack.addArrangedSubview(formRow(label: "应用", control: appNameLabel))
+        stack.addArrangedSubview(formRow(label: L10n.t("应用"), control: appNameLabel))
 
-        githubLinkButton.toolTip = "在浏览器中打开 \(AppVersion.repositoryURL)"
+        githubLinkButton.toolTip = L10n.f("在浏览器中打开 %@", AppVersion.repositoryURL)
 
         copyRepoButton.bezelStyle = .rounded
         copyRepoButton.controlSize = .small
@@ -795,7 +833,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         repoRow.alignment = .centerY
         stack.addArrangedSubview(formRow(label: "GitHub", control: repoRow))
 
-        stack.addArrangedSubview(formHintRow("Rlaunch · 轻量高效的 macOS 启动台平替。点击 GitHub 地址可在浏览器中打开项目主页。"))
+        stack.addArrangedSubview(formHintRow(L10n.t("Rlaunch · 轻量高效的 macOS 启动台平替。点击 GitHub 地址可在浏览器中打开项目主页。")))
     }
 
     /// 切换 Tab：隐藏其他页、滚动回顶部
@@ -808,7 +846,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             page.isHidden = (i != index)
         }
         layoutContent()
-        scrollView.contentView.scroll(to: .zero)
+        scrollToTop()
+    }
+
+    /// 滚动回顶部。
+    /// 文档视图未设 `isFlipped`，`.zero` 其实是左下角——内容超出可视高度时会停在底部，
+    /// 把最上面的分组裁掉（英文文案更长、页面更高时尤其明显）。
+    private func scrollToTop() {
+        let maxY = max(0, containerView.frame.height - scrollView.contentView.bounds.height)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
@@ -829,6 +875,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshControlValues() {
         themeControl.selectedSegment = config.theme == .light ? 0 : (config.theme == .dark ? 1 : 2)
+        languageControl.selectedSegment = AppLanguage.allCases.firstIndex(of: config.language) ?? 0
 
         // 背景图与模糊联动
         if let path = config.backgroundImagePath, !path.isEmpty {
@@ -837,7 +884,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             blurSlider.isEnabled = true
             blurValue.textColor = .secondaryLabelColor
         } else {
-            bgPathLabel.stringValue = "默认（系统毛玻璃）"
+            bgPathLabel.stringValue = L10n.t("默认（系统毛玻璃）")
             clearBgButton.isEnabled = false
             blurSlider.isEnabled = false
             blurValue.textColor = .tertiaryLabelColor
@@ -892,19 +939,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         switch status {
         case .enabled:
             launchAtLoginSwitch.state = .on
-            launchAtLoginStatus.stringValue = "状态：已开启（登录时自动启动）"
+            launchAtLoginStatus.stringValue = L10n.t("状态：已开启（登录时自动启动）")
             launchAtLoginStatus.textColor = .systemGreen
         case .requiresApproval:
             launchAtLoginSwitch.state = .off
-            launchAtLoginStatus.stringValue = "状态：需要系统授权（请在系统设置中允许）"
+            launchAtLoginStatus.stringValue = L10n.t("状态：需要系统授权（请在系统设置中允许）")
             launchAtLoginStatus.textColor = .systemOrange
         case .notRegistered:
             launchAtLoginSwitch.state = .off
-            launchAtLoginStatus.stringValue = "状态：未开启"
+            launchAtLoginStatus.stringValue = L10n.t("状态：未开启")
             launchAtLoginStatus.textColor = .secondaryLabelColor
         case .notFound:
             launchAtLoginSwitch.state = .off
-            launchAtLoginStatus.stringValue = "状态：未找到应用副本，请放入「应用程序」文件夹"
+            launchAtLoginStatus.stringValue = L10n.t("状态：未找到应用副本，请放入「应用程序」文件夹")
             launchAtLoginStatus.textColor = .systemRed
         @unknown default:
             launchAtLoginSwitch.state = .off
@@ -931,7 +978,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshPermissionStatus() {
         let trusted = AXIsProcessTrusted()
-        axStatusLabel.stringValue = trusted ? "辅助功能：已授权 ✓" : "辅助功能：未授权"
+        axStatusLabel.stringValue = trusted ? L10n.t("辅助功能：已授权 ✓") : L10n.t("辅助功能：未授权")
         axStatusLabel.textColor = trusted ? .systemGreen : .systemRed
     }
 
@@ -942,7 +989,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
 
         if config.scanPaths.isEmpty {
-            let emptyLabel = NSTextField(labelWithString: "未配置扫描目录")
+            let emptyLabel = NSTextField(labelWithString: L10n.t("未配置扫描目录"))
             emptyLabel.font = .systemFont(ofSize: 12)
             emptyLabel.textColor = .tertiaryLabelColor
             scanRowsStack.addArrangedSubview(emptyLabel)
@@ -994,7 +1041,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
 
         if config.hiddenAppPaths.isEmpty {
-            let emptyLabel = NSTextField(labelWithString: "没有被隐藏的应用")
+            let emptyLabel = NSTextField(labelWithString: L10n.t("没有被隐藏的应用"))
             emptyLabel.font = .systemFont(ofSize: 12)
             emptyLabel.textColor = .tertiaryLabelColor
             hiddenRowsStack.addArrangedSubview(emptyLabel)
@@ -1020,13 +1067,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 label.setContentHuggingPriority(.defaultLow, for: .horizontal)
                 label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-                let restore = NSButton(title: "恢复", target: self, action: #selector(restoreHiddenApp(_:)))
+                let restore = NSButton(title: L10n.t("恢复"), target: self, action: #selector(restoreHiddenApp(_:)))
                 restore.bezelStyle = .inline
                 restore.isBordered = false
                 restore.font = .systemFont(ofSize: 11, weight: .medium)
                 restore.contentTintColor = .controlAccentColor
                 restore.setContentHuggingPriority(.required, for: .horizontal)
-                restore.toolTip = "恢复显示"
+                restore.toolTip = L10n.t("恢复显示")
 
                 rowView.addArrangedSubview(icon)
                 rowView.addArrangedSubview(label)
@@ -1043,7 +1090,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 事件处理
 
     @objc private func controlChanged(_ sender: Any?) {
+        let previousLanguage = config.language
         config.theme = themeControl.selectedSegment == 0 ? .light : (themeControl.selectedSegment == 1 ? .dark : .system)
+        let languageIndex = max(0, min(languageControl.selectedSegment, AppLanguage.allCases.count - 1))
+        config.language = AppLanguage.allCases[languageIndex]
         config.bgOpacity = opacitySlider.doubleValue
         config.bgBlur = blurSlider.doubleValue
         config.columns = columnsStepper.intValue > 0 ? Int(columnsStepper.intValue) : config.columns
@@ -1064,6 +1114,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
 
         ThemeManager.current = config.theme
+
+        // 语言切换：立即落盘并通知全局重建界面。
+        // 异步派发，避免在设置窗口自身的回调里把它释放掉。
+        if config.language != previousLanguage {
+            L10n.setLanguage(config.language)
+            persist()
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: ConfigStore.didChange, object: nil)
+            }
+        }
+
         refreshValues(heavy: false)
         scheduleSave()
     }
@@ -1098,7 +1159,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         isRecordingShortcut = true
-        recordButton.title = "按下快捷键… (Esc 取消)"
+        recordButton.title = L10n.t("按下快捷键… (Esc 取消)")
         recordMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self, self.isRecordingShortcut else { return event }
             let code = Int(event.keyCode)
@@ -1128,7 +1189,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             self.recordMonitor = nil
         }
         isRecordingShortcut = false
-        recordButton.title = "录制快捷键…"
+        recordButton.title = L10n.t("录制快捷键…")
         refreshValues(heavy: false)
         scheduleSave()
     }
@@ -1163,7 +1224,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.message = "选择要扫描的应用目录"
+        panel.message = L10n.t("选择要扫描的应用目录")
         panel.beginSheetModal(for: window!) { [weak self] resp in
             guard let self, resp == .OK else { return }
             for url in panel.urls {
@@ -1196,12 +1257,52 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func rescanClicked() {
         onRescan?()
-        rescanStatusScanTab.stringValue = "已触发重新扫描 ✓"
-        rescanStatusGeneralTab.stringValue = "已触发重新扫描 ✓"
+        rescanStatusScanTab.stringValue = L10n.t("已触发重新扫描 ✓")
+        rescanStatusGeneralTab.stringValue = L10n.t("已触发重新扫描 ✓")
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.rescanStatusScanTab.stringValue = ""
             self?.rescanStatusGeneralTab.stringValue = ""
         }
+    }
+
+    // MARK: - 就地切换语言
+
+    /// 切换语言时就地刷新界面文案。
+    ///
+    /// 不重建窗口：重建会整块闪烁，还会丢掉滚动位置与当前所在标签页。
+    /// 做法是遍历视图树，把「已知译文」反查回键、再写成新语言；
+    /// 应用名、路径、数值等非文案内容反查不到，原样保留。
+    func retranslateInterface() {
+        retranslateTree(in: window?.contentView)
+        // 含格式参数的文案无法反查，单独刷新
+        rendererHintLabel?.stringValue = Self.rendererHintText
+        githubLinkButton.toolTip = L10n.f("在浏览器中打开 %@", AppVersion.repositoryURL)
+        layoutContent()
+    }
+
+    private func retranslateTree(in view: NSView?) {
+        guard let view else { return }
+        switch view {
+        case let tab as TabButton:
+            // TabButton 用 attributedTitle 控制缩进与配色，需走它自己的 setter
+            tab.applyLocalizedTitle(L10n.retranslate(tab.title))
+        case is LinkButton:
+            break   // 显示的是 URL，不翻译，也不能覆盖其 attributedTitle
+        case let button as NSButton:
+            button.title = L10n.retranslate(button.title)
+            button.toolTip = button.toolTip.map(L10n.retranslate)
+        case let segmented as NSSegmentedControl:
+            for index in 0..<segmented.segmentCount {
+                guard let label = segmented.label(forSegment: index) else { continue }
+                segmented.setLabel(L10n.retranslate(label), forSegment: index)
+            }
+        case let field as NSTextField:
+            field.stringValue = L10n.retranslate(field.stringValue)
+            field.toolTip = field.toolTip.map(L10n.retranslate)
+        default:
+            view.toolTip = view.toolTip.map(L10n.retranslate)
+        }
+        for subview in view.subviews { retranslateTree(in: subview) }
     }
 
     // MARK: - 配置维护
@@ -1225,9 +1326,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             guard let self, resp == .OK, let url = panel.url else { return }
             do {
                 try FileManager.default.copyItem(at: ConfigStore.configFileURL, to: url)
-                self.showResetStatus("已导出 ✓", color: .systemGreen)
+                self.showResetStatus(L10n.t("已导出 ✓"), color: .systemGreen)
             } catch {
-                self.showResetStatus("导出失败：\(error.localizedDescription)", color: .systemRed)
+                self.showResetStatus(L10n.f("导出失败：%@", error.localizedDescription), color: .systemRed)
             }
         }
     }
@@ -1239,12 +1340,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.json]
-        panel.message = "选择要导入的 Rlaunch 配置文件"
+        panel.message = L10n.t("选择要导入的 Rlaunch 配置文件")
         panel.beginSheetModal(for: window!) { [weak self] resp in
             guard let self, resp == .OK, let url = panel.url else { return }
             guard let data = try? Data(contentsOf: url),
                   let imported = try? JSONDecoder().decode(AppConfig.self, from: data) else {
-                self.showResetStatus("导入失败：文件格式不正确", color: .systemRed)
+                self.showResetStatus(L10n.t("导入失败：文件格式不正确"), color: .systemRed)
                 return
             }
             ConfigStore.save(imported)
@@ -1252,7 +1353,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             self.config = imported
             self.refreshValues()
             NotificationCenter.default.post(name: ConfigStore.didChange, object: nil)
-            self.showResetStatus("已导入 ✓", color: .systemGreen)
+            self.showResetStatus(L10n.t("已导入 ✓"), color: .systemGreen)
         }
     }
 
@@ -1260,18 +1361,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func resetLayoutClicked() {
         guard isConfirmingLayoutReset else {
             isConfirmingLayoutReset = true
-            resetLayoutButton.title = "确认重置？"
-            showResetStatus("将清空所有文件夹与页面编排，应用不受影响", color: .systemOrange)
+            resetLayoutButton.title = L10n.t("确认重置？")
+            showResetStatus(L10n.t("将清空所有文件夹与页面编排，应用不受影响"), color: .systemOrange)
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
                 guard let self, self.isConfirmingLayoutReset else { return }
                 self.isConfirmingLayoutReset = false
-                self.resetLayoutButton.title = "重置桌面布局"
+                self.resetLayoutButton.title = L10n.t("重置桌面布局")
                 self.resetStatusLabel.stringValue = ""
             }
             return
         }
         isConfirmingLayoutReset = false
-        resetLayoutButton.title = "重置桌面布局"
+        resetLayoutButton.title = L10n.t("重置桌面布局")
 
         var latest = ConfigStore.load()
         latest.folders = []
@@ -1282,7 +1383,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         config.pageOrders = []
         config.itemOrder = []
         NotificationCenter.default.post(name: ConfigStore.didChange, object: nil)
-        showResetStatus("桌面布局已重置 ✓", color: .systemGreen)
+        showResetStatus(L10n.t("桌面布局已重置 ✓"), color: .systemGreen)
     }
 
     private func showResetStatus(_ text: String, color: NSColor) {
@@ -1298,18 +1399,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func resetClicked() {
         guard isConfirmingReset else {
             isConfirmingReset = true
-            resetButton.title = "确认恢复？"
-            resetStatusLabel.stringValue = "仅重置设置项，保留文件夹与桌面布局"
+            resetButton.title = L10n.t("确认恢复？")
+            resetStatusLabel.stringValue = L10n.t("仅重置设置项，保留文件夹与桌面布局")
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
                 guard let self, self.isConfirmingReset else { return }
                 self.isConfirmingReset = false
-                self.resetButton.title = "恢复默认设置"
+                self.resetButton.title = L10n.t("恢复默认设置")
                 self.resetStatusLabel.stringValue = ""
             }
             return
         }
         isConfirmingReset = false
-        resetButton.title = "恢复默认设置"
+        resetButton.title = L10n.t("恢复默认设置")
 
         let defaults = AppConfig.defaults
         config.theme = defaults.theme
@@ -1333,7 +1434,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ThemeManager.current = config.theme
         refreshValues()
         scheduleSave()
-        resetStatusLabel.stringValue = "已恢复默认设置 ✓"
+        resetStatusLabel.stringValue = L10n.t("已恢复默认设置 ✓")
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.resetStatusLabel.stringValue = ""
         }
@@ -1345,7 +1446,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(AppVersion.repositoryURL, forType: .string)
-        copyRepoFeedback.stringValue = "已复制 ✓"
+        copyRepoFeedback.stringValue = L10n.t("已复制 ✓")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
             self?.copyRepoFeedback.stringValue = ""
         }
@@ -1358,25 +1459,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 保存
 
     private func persist() {
+        // 读取磁盘最新值（保留主窗口负责的字段），再覆盖设置面板负责的全部字段。
+        // 字段清单集中在 AppConfig.applySettings，避免此处手写漏字段。
         var latest = ConfigStore.load()
-        latest.scanPaths = config.scanPaths
-        latest.recursionDepth = config.recursionDepth
-        latest.theme = config.theme
-        latest.backgroundImagePath = config.backgroundImagePath
-        latest.bgOpacity = config.bgOpacity
-        latest.bgBlur = config.bgBlur
-        latest.columns = config.columns
-        latest.rows = config.rows
-        latest.columnSpacing = config.columnSpacing
-        latest.rowSpacing = config.rowSpacing
-        latest.fullscreenSpacingScale = config.fullscreenSpacingScale
-        latest.iconSize = config.iconSize
-        latest.hotKeyEnabled = config.hotKeyEnabled
-        latest.hotKeyKeyCode = config.hotKeyKeyCode
-        latest.hotKeyModifiers = config.hotKeyModifiers
-        latest.pinchEnabled = config.pinchEnabled
-        latest.pinchThreshold = config.pinchThreshold
-        latest.launchAtLogin = config.launchAtLogin
+        latest.applySettings(from: config)
         ConfigStore.save(latest)
     }
 
@@ -1548,6 +1634,12 @@ final class TabButton: NSButton {
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func clicked() { onSelect?() }
+
+    /// 切换语言时就地更新标题（attributedTitle 的缩进/配色由 updateStyle 重建）
+    func applyLocalizedTitle(_ text: String) {
+        title = text
+        updateStyle()
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
