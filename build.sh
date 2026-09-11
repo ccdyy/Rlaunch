@@ -17,6 +17,13 @@ else
     exit 1
 fi
 
+# 版本号：优先取最近的 git tag（v0.1.6 → 0.1.6），并附带提交描述便于定位构建
+VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+[ -z "$VERSION" ] && VERSION="1.0.0"
+BUILD_DESC="$(git describe --tags --always --dirty 2>/dev/null || true)"
+[ -z "$BUILD_DESC" ] && BUILD_DESC="$VERSION"
+echo "版本号：$VERSION ($BUILD_DESC)"
+
 APP="Rlaunch.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -48,9 +55,9 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>__VERSION__</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>__BUILD_DESC__</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
@@ -60,6 +67,9 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </dict>
 </plist>
 EOF
+
+# 注入 tag 版本与构建描述
+/usr/bin/sed -i '' -e "s|__VERSION__|$VERSION|" -e "s|__BUILD_DESC__|$BUILD_DESC|" "$APP/Contents/Info.plist"
 
 codesign --force --deep --sign - "$APP" 2>/dev/null || true
 echo "✅ 构建完成: $APP"

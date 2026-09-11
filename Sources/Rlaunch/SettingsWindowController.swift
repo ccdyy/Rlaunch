@@ -208,6 +208,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let rescanButtonGeneralTab = NSButton(title: "重新扫描应用", target: nil, action: nil)
     private let rescanStatusGeneralTab = NSTextField(labelWithString: "")
 
+    // 关于
+    private let appNameLabel = NSTextField(labelWithString: "Rlaunch")
+    private let githubLinkButton = LinkButton(url: AppVersion.repositoryURL)
+    private let copyRepoButton = NSButton(title: "复制地址", target: nil, action: nil)
+    private let copyRepoFeedback = NSTextField(labelWithString: "")
+
     // 窗口元素
     private var scrollView: NSScrollView!
     private var containerView: NSView!
@@ -647,12 +653,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         trackpadButton.action = #selector(openTrackpadSettings)
         stack.addArrangedSubview(formRow(label: "触控板", control: trackpadButton))
 
-        let hint = NSTextField(wrappingLabelWithString:
-            "手势说明：四指/五指捏合通过系统触摸点间距收缩算法识别（需要辅助功能权限）。若系统已授权仍无法使用，可在「辅助功能」中先移除 Rlaunch 再重新添加，并在「触控板手势设置」中检查是否被系统默认手势占用。")
-        hint.font = .systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
-        hint.preferredMaxLayoutWidth = FormMetrics.controlAreaWidth
-        stack.addArrangedSubview(formHintRow(hint.stringValue))
+        stack.addArrangedSubview(formHintRow(
+            "手势说明：四指/五指捏合通过系统触摸点间距收缩算法识别（需要辅助功能权限）。若系统已授权仍无法使用，可在「辅助功能」中先移除 Rlaunch 再重新添加，并在「触控板手势设置」中检查是否被系统默认手势占用。"))
     }
 
     // MARK: 5. 通用设置
@@ -675,7 +677,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(formRow(label: "", control: launchAtLoginStatus))
         stack.addArrangedSubview(formHintRow("可在「系统设置 → 通用 → 登录项与扩展」中管理。"))
 
-        stack.addArrangedSubview(makeSectionHeader("应用维护与关于"))
+        stack.addArrangedSubview(makeSectionHeader("应用维护"))
 
         rescanButtonGeneralTab.bezelStyle = .rounded
         rescanButtonGeneralTab.target = self
@@ -690,10 +692,34 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         generalRescanRow.alignment = .centerY
         stack.addArrangedSubview(formRow(label: "应用索引", control: generalRescanRow))
 
-        let aboutLabel = NSTextField(labelWithString: "Rlaunch · 轻量高效的 macOS 启动台平替")
-        aboutLabel.font = .systemFont(ofSize: 11, weight: .regular)
-        aboutLabel.textColor = .tertiaryLabelColor
-        stack.addArrangedSubview(formRow(label: "关于", control: aboutLabel))
+        buildAboutSection(stack)
+    }
+
+    // MARK: 6. 关于
+    private func buildAboutSection(_ stack: NSStackView) {
+        stack.addArrangedSubview(makeSectionHeader("关于"))
+
+        appNameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        appNameLabel.textColor = .labelColor
+        stack.addArrangedSubview(formRow(label: "应用", control: appNameLabel))
+
+        githubLinkButton.toolTip = "在浏览器中打开 \(AppVersion.repositoryURL)"
+
+        copyRepoButton.bezelStyle = .rounded
+        copyRepoButton.controlSize = .small
+        copyRepoButton.target = self
+        copyRepoButton.action = #selector(copyRepositoryURL)
+
+        copyRepoFeedback.font = .systemFont(ofSize: 11)
+        copyRepoFeedback.textColor = .systemGreen
+
+        let repoRow = NSStackView(views: [githubLinkButton, copyRepoButton, copyRepoFeedback])
+        repoRow.orientation = .horizontal
+        repoRow.spacing = 10
+        repoRow.alignment = .centerY
+        stack.addArrangedSubview(formRow(label: "GitHub", control: repoRow))
+
+        stack.addArrangedSubview(formHintRow("Rlaunch · 轻量高效的 macOS 启动台平替。点击 GitHub 地址可在浏览器中打开项目主页。"))
     }
 
     /// 切换 Tab：隐藏其他页、滚动回顶部
@@ -712,7 +738,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - 值刷新与状态联动
 
-    private func refreshValues() {
+    /// 刷新全部界面状态。
+    /// - Parameter heavy: 是否同时刷新「耗时状态」（扫描目录行、登录项、辅助功能权限）。
+    ///   滑块/开关连续变化时传 `false`，避免每帧重建目录行、反复查询系统服务造成掉帧。
+    private func refreshValues(heavy: Bool = true) {
+        refreshControlValues()
+        if heavy {
+            refreshLaunchAtLogin()
+            refreshPermissionStatus()
+            rebuildScanRows()
+        }
+    }
+
+    private func refreshControlValues() {
         themeControl.selectedSegment = config.theme == .light ? 0 : (config.theme == .dark ? 1 : 2)
 
         // 背景图与模糊联动
@@ -769,10 +807,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         pinchValue.stringValue = String(format: "%.2f", config.pinchThreshold)
         pinchSlider.isEnabled = config.pinchEnabled
         pinchValue.textColor = config.pinchEnabled ? .secondaryLabelColor : .tertiaryLabelColor
-
-        refreshLaunchAtLogin()
-        refreshPermissionStatus()
-        rebuildScanRows()
     }
 
     /// 与系统登录项状态同步（以系统状态为准）
@@ -899,7 +933,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
 
         ThemeManager.current = config.theme
-        refreshValues()
+        refreshValues(heavy: false)
         scheduleSave()
     }
 
@@ -912,14 +946,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         panel.beginSheetModal(for: window!) { [weak self] resp in
             guard let self, resp == .OK, let url = panel.url else { return }
             self.config.backgroundImagePath = url.path
-            self.refreshValues()
+            self.refreshValues(heavy: false)
             self.scheduleSave()
         }
     }
 
     @objc private func clearBackground() {
         config.backgroundImagePath = nil
-        refreshValues()
+        refreshValues(heavy: false)
         scheduleSave()
     }
 
@@ -964,14 +998,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
         isRecordingShortcut = false
         recordButton.title = "录制快捷键…"
-        refreshValues()
+        refreshValues(heavy: false)
         scheduleSave()
     }
 
     @objc private func clearShortcut() {
         config.hotKeyKeyCode = nil
         config.hotKeyModifiers = 0
-        refreshValues()
+        refreshValues(heavy: false)
         scheduleSave()
     }
 
@@ -1026,6 +1060,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.rescanStatusScanTab.stringValue = ""
             self?.rescanStatusGeneralTab.stringValue = ""
+        }
+    }
+
+    // MARK: - 关于
+
+    @objc private func copyRepositoryURL() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(AppVersion.repositoryURL, forType: .string)
+        copyRepoFeedback.stringValue = "已复制 ✓"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+            self?.copyRepoFeedback.stringValue = ""
         }
     }
 
@@ -1135,6 +1181,67 @@ final class CloseButton: NSButton {
             ? NSColor.labelColor.withAlphaComponent(0.12).cgColor
             : .clear
         contentTintColor = hovered ? .labelColor : .secondaryLabelColor
+    }
+}
+
+// MARK: - 链接按钮组件
+
+/// 展示型链接按钮：强调色文字 + 手型光标，悬停加下划线，点击后由系统在浏览器中打开。
+final class LinkButton: NSButton {
+    private let targetURL: URL?
+
+    init(url: String) {
+        self.targetURL = URL(string: url)
+        super.init(frame: .zero)
+        isBordered = false
+        bezelStyle = .inline
+        focusRingType = .none
+        alignment = .left
+        imagePosition = .noImage
+        attributedTitle = Self.attributedTitle(for: url, underlined: false)
+        target = self
+        action = #selector(openLink)
+        toolTip = url
+        setContentHuggingPriority(.defaultLow, for: .horizontal)
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private static func attributedTitle(for text: String, underlined: Bool) -> NSAttributedString {
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.linkColor,
+        ]
+        if underlined {
+            attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
+        return NSAttributedString(string: text, attributes: attrs)
+    }
+
+    @objc private func openLink() {
+        guard let targetURL else { return }
+        NSWorkspace.shared.open(targetURL)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        attributedTitle = Self.attributedTitle(for: title, underlined: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        attributedTitle = Self.attributedTitle(for: title, underlined: false)
     }
 }
 

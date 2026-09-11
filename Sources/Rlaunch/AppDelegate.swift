@@ -15,13 +15,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let config = ConfigStore.load()
         ThemeManager.current = config.theme
 
-        mainController = MainWindowController(config: config)
-        mainController.startScan()
+        mainController = MainWindowController(config: config) // 内部已启动扫描
         mainController.show()
 
         menuBar = MenuBarController()
         menuBar.setup(
-            onToggle: { [weak self] in self?.mainController.toggle() },
+            // 菜单栏图标左键：直接以「小屏窗口」形态显示 / 收起，不再弹菜单
+            onToggle: { [weak self] in self?.mainController.toggleWindowed() },
             onSettings: { [weak self] in self?.mainController.openSettings() },
             onQuit: { NSApp.terminate(nil) }
         )
@@ -82,6 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        mainController?.persistFrameForTermination()
+        hotKey?.stop()
         pinch.stop() // 干净释放触控板会话，避免系统会话被楔死
     }
 }

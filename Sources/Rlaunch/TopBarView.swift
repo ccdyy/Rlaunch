@@ -25,6 +25,11 @@ final class TrafficLightsView: NSView {
         greenDot.target = self
         greenDot.action = #selector(greenClicked)
 
+        // 辅助功能标签：VoiceOver 可朗读三色按钮
+        redDot.setAccessibilityLabel("隐藏 Rlaunch")
+        yellowDot.setAccessibilityLabel("最小化窗口")
+        greenDot.setAccessibilityLabel("切换全屏")
+
         for d in [redDot, yellowDot, greenDot] {
             addSubview(d)
         }
@@ -269,7 +274,6 @@ final class TopBarView: NSView {
     var onPrevPage: (() -> Void)?
     var onNextPage: (() -> Void)?
     var onSettings: (() -> Void)?
-    var onBackToMain: (() -> Void)?
     var onRefresh: (() -> Void)?
 
     let traffic = TrafficLightsView()
@@ -278,7 +282,6 @@ final class TopBarView: NSView {
     let refreshButton = SymbolButton(symbol: "arrow.clockwise")
     let fullscreenButton = SymbolButton(symbol: "arrow.up.left.and.arrow.down.right")
     let settingsButton = SymbolButton(symbol: "gearshape")
-    let folderLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -287,6 +290,7 @@ final class TopBarView: NSView {
         searchField.font = .systemFont(ofSize: 13)
         searchField.controlSize = .large
         searchField.sendsSearchStringImmediately = true
+        searchField.setAccessibilityLabel("搜索应用")
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
         // 用 textDidChange 通知兜底：action 在中文输入法等场景可能不触发
@@ -317,13 +321,6 @@ final class TopBarView: NSView {
         settingsButton.action = #selector(settingsClicked)
         addSubview(settingsButton)
 
-        folderLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        folderLabel.textColor = .labelColor
-        folderLabel.isHidden = true
-        let click = NSClickGestureRecognizer(target: self, action: #selector(backClicked))
-        folderLabel.addGestureRecognizer(click)
-        addSubview(folderLabel)
-
         addSubview(traffic)
         traffic.onRed = { [weak self] in self?.onRed?() }
         traffic.onYellow = { [weak self] in self?.onYellow?() }
@@ -337,29 +334,35 @@ final class TopBarView: NSView {
     }
 
     @objc private func textDidChange(_ notification: Notification) {
-        onSearchChanged?(searchField.stringValue)
+        emitSearch(searchField.stringValue)
     }
 
     @objc private func searchChanged(_ sender: NSSearchField) {
-        onSearchChanged?(sender.stringValue)
+        emitSearch(sender.stringValue)
+    }
+
+    /// `sendsSearchStringImmediately` 下 action 与 textDidChange 会同时触发，
+    /// 这里按值去重，避免每次按键重复全量刷新网格。
+    private var lastEmittedQuery: String?
+
+    private func emitSearch(_ query: String) {
+        guard query != lastEmittedQuery else { return }
+        lastEmittedQuery = query
+        onSearchChanged?(query)
     }
 
     @objc private func greenClicked() { onGreen?() }
     @objc private func settingsClicked() { onSettings?() }
-    @objc private func backClicked() { onBackToMain?() }
     @objc private func refreshClicked() { onRefresh?() }
-
-    func setFolderMode(name: String?) {
-        if let name {
-            folderLabel.stringValue = "← \(name)"
-            folderLabel.isHidden = false
-        } else {
-            folderLabel.isHidden = true
-        }
-    }
 
     func setPage(_ page: Int, of total: Int) {
         pageLabel.stringValue = "\(page + 1) / \(max(total, 1))"
+    }
+
+    /// 程序化清空搜索框：同时重置去重缓存，否则下次输入相同关键词会被误判为重复而不触发搜索
+    func clearSearchField() {
+        searchField.stringValue = ""
+        lastEmittedQuery = nil
     }
 
     private(set) var isFullscreen: Bool = false
@@ -416,12 +419,6 @@ final class TopBarView: NSView {
         let gap: CGFloat = 10
 
         traffic.frame = NSRect(x: 16, y: 0, width: 62, height: h)
-
-        if !folderLabel.isHidden {
-            let size = folderLabel.sizeThatFits(NSSize(width: 220, height: h))
-            folderLabel.frame = NSRect(x: traffic.frame.maxX + 24, y: (h - size.height) / 2,
-                                       width: size.width + 4, height: size.height)
-        }
 
         let searchWidth = min(460, bounds.width - 380)
         searchField.frame = NSRect(x: (bounds.width - searchWidth) / 2, y: (h - 30) / 2,

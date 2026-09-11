@@ -4,6 +4,10 @@ import Cocoa
 final class SnapScrollView: NSScrollView {
     var onPageChanged: ((Int) -> Void)?
     var onEscape: (() -> Void)?
+    /// 直接输入字符（Launchpad 手感）：由控制器转交给搜索框
+    var onTextInput: ((String) -> Void)?
+    /// ⌘F 聚焦搜索框
+    var onFocusSearch: (() -> Void)?
 
     private(set) var pageCount = 1
     private(set) var currentPage = 0
@@ -172,6 +176,12 @@ final class SnapScrollView: NSScrollView {
     override var acceptsFirstResponder: Bool { true }
 
     override func keyDown(with event: NSEvent) {
+        // ⌘F：聚焦搜索框
+        if event.modifierFlags.contains(.command),
+           event.charactersIgnoringModifiers?.lowercased() == "f" {
+            onFocusSearch?()
+            return
+        }
         switch event.keyCode {
         case 123: scrollToPage(currentPage - 1, animated: true) // ←
         case 124: scrollToPage(currentPage + 1, animated: true) // →
@@ -180,7 +190,16 @@ final class SnapScrollView: NSScrollView {
         case 115: scrollToPage(0, animated: true)               // Home
         case 119: scrollToPage(pageCount - 1, animated: true)   // End
         case 53: onEscape?()                                    // Esc
-        default: super.keyDown(with: event)
+        default:
+            // 直接输入可打印字符即开始搜索（无需先点击搜索框）
+            let disallowed: NSEvent.ModifierFlags = [.command, .control, .option]
+            if event.modifierFlags.intersection(disallowed).isEmpty,
+               let chars = event.characters, !chars.isEmpty,
+               chars.rangeOfCharacter(from: .controlCharacters) == nil {
+                onTextInput?(chars)
+                return
+            }
+            super.keyDown(with: event)
         }
     }
 }

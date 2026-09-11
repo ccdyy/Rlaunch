@@ -11,13 +11,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private var config: AppConfig
     private var apps: [AppInfo] = []
-    private var currentFolderID: String?
     private var searchQuery = ""
     private var pages: [GridPageView] = []
     private var lastLayoutSize: NSSize = .zero
     private(set) var isPseudoFullScreen = false
     private var frameBeforeFullScreen: NSRect = .zero
     private var isScreenTransitioning = false
+    private var frameSaveTimer: Timer?
 
     private let background = BackgroundView()
     private let topBar = TopBarView()
@@ -90,17 +90,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
 
             hideTimer?.invalidate()
-            hideTimer = Timer.scheduledTimer(withTimeInterval: 1.8, repeats: false) { [weak self] _ in
+            // 用 .common 模式：窗口拖动/滚动等 tracking 期间计时器依然生效
+            let timer = Timer(timeInterval: 1.8, repeats: false) { [weak self] _ in
                 guard let self else { return }
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = 0.25
                     self.animator().alphaValue = 0
-                } completionHandler: {
-                    if self.alphaValue == 0 {
-                        self.removeFromSuperview()
-                    }
+                } completionHandler: { [weak self] in
+                    guard let self, self.alphaValue == 0 else { return }
+                    self.removeFromSuperview()
                 }
             }
+            RunLoop.main.add(timer, forMode: .common)
+            hideTimer = timer
         }
     }
 
@@ -145,7 +147,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     init(config: AppConfig) {
         self.config = config
-        let rect = NSRect(x: 0, y: 0, width: config.windowWidth, height: config.windowHeight)
+        let rect = Self.initialWindowFrame(config: config)
         let window = LauncherWindow(
             contentRect: rect,
             styleMask: [.borderless, .fullSizeContentView, .resizable],
@@ -203,6 +205,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.togglePseudoFullScreen()
             }
         }
+        scrollView.onTextInput = { [weak self] text in self?.beginSearch(with: text) }
+        scrollView.onFocusSearch = { [weak self] in self?.focusSearchField() }
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(configDidChange), name: ConfigStore.didChange, object: nil)
@@ -213,7 +217,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     deinit {
+        frameSaveTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    /// 窗口初始位置：优先恢复上次位置，位置失效（显示器变更/越界）或首次启动时居中显示。
+    private static func initialWindowFrame(config: AppConfig) -> NSRect {
+        let size = NSSize(
+            width: max(config.windowWidth, 620),
+            height: max(config.windowHeight, 440)
+        )
+        if let x = config.windowX, let y = config.windowY {
+            let saved = NSRect(x: x, y: y, width: size.width, height: size.height)
+            let isReachable = NSScreen.screens.contains { screen in
+                let overlap = screen.visibleFrame.intersection(saved)
+                return overlap.width >= 160 && overlap.height >= 120
+            }
+            if isReachable { return saved }
+        }
+        guard let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame else {
+            return NSRect(origin: .zero, size: size)
+        }
+        return NSRect(
+            x: visible.midX - size.width / 2,
+            y: visible.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
     }
 
     private func wireTopBar() {
@@ -230,7 +261,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self.scrollView.scrollToPage(self.scrollView.currentPage + 1, animated: true)
         }
         topBar.onSettings = { [weak self] in self?.openSettings() }
-        topBar.onBackToMain = { [weak self] in self?.backToMain() }
         topBar.onRefresh = { [weak self] in self?.rescan() }
     }
 
@@ -367,11 +397,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return itemMap["app:\(orderKey)"]
     }
 
-    private var currentFolder: FolderConfig? {
-        guard let id = currentFolderID else { return nil }
-        return config.folders.first { $0.id == id }
-    }
-
     private func gridConfig() -> GridLayoutConfig {
         if isPseudoFullScreen, let screen = window?.screen ?? NSScreen.main {
             let W = screen.frame.width
@@ -405,45 +430,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let pageCount = max(pageList.count, 1)
         scrollView.setPageCount(pageCount)
 
-        for page in pages { page.removeFromSuperview() }
-        pages.removeAll()
-
         let ids = selectedIdentifiers
         let isLimitReached = selectedItems.count >= Self.maxSelectionCount
+        let cfg = gridConfig()
 
+        // 复用已有页面视图（页面索引与页号一一对应且只从尾部增删）：
+        // 搜索输入、设置变更只需更新内容，避免整页重建导致的卡顿与瞬时闪烁。
+        while pages.count > pageList.count {
+            pages.removeLast().removeFromSuperview()
+        }
+        while pages.count < pageList.count {
+            let page = makePage(at: pages.count)
+            pages.append(page)
+            pagesContainer.addSubview(page)
+        }
         for (pIndex, pItems) in pageList.enumerated() {
-            let page = GridPageView()
-            page.layoutConfig = gridConfig()
+            let page = pages[pIndex]
+            page.layoutConfig = cfg
             page.items = pItems
             page.isSelectionMode = isSelectionMode
             page.selectedIdentifiers = ids
             page.isSelectionDisabled = isLimitReached
-
-            page.onAppClick = { [weak self] info in self?.activateApp(info) }
-            page.onFolderClick = { [weak self] folder in self?.openFolder(folder) }
-            page.onBlankClick = { [weak self] in self?.handleBlankClick() }
-            page.onDropAppToBlank = { [weak self] path in self?.removeAppFromFolder(path) }
-            page.onDropAppToFolder = { [weak self] path, folder in self?.addApp(path, to: folder) }
-            page.onDropAppsToFolder = { [weak self] paths, folder in self?.addApps(paths, to: folder) }
-            page.onContextMenu = { [weak self] item in self?.contextMenu(for: item) }
-            page.onLongPressItem = { [weak self] item in self?.handleLongPress(item) }
-            page.onToggleSelectItem = { [weak self] item in self?.toggleSelectItem(item) }
-            page.onSelectionLimitReached = { [weak self] in
-                self?.showToast("最多只能添加 \(Self.maxSelectionCount) 个")
-            }
-            page.onResizeFolder = { [weak self] folder, cols, rows in
-                self?.resizeFolder(folder, cols: cols, rows: rows)
-            }
-            page.getSelectedItemsForDrag = { [weak self] in
-                self?.selectedItems ?? []
-            }
-            let targetPage = pIndex
-            page.onReorderDrop = { [weak self] itemIds, targetIndex in
-                self?.handleReorderDrop(itemIds: itemIds, targetPageIndex: targetPage, targetIndex: targetIndex)
-            }
-
-            pages.append(page)
-            pagesContainer.addSubview(page)
         }
 
         lastLayoutSize = .zero
@@ -452,7 +459,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let target = min(max(keepPage ?? scrollView.currentPage, 0), pageCount - 1)
         scrollView.scrollToPage(target, animated: false)
         topBar.setPage(target, of: pageCount)
-        topBar.setFolderMode(name: nil)
+    }
+
+    /// 创建一页网格视图并接好全部回调；页面索引在复用期间保持不变，故可安全捕获。
+    private func makePage(at index: Int) -> GridPageView {
+        let page = GridPageView()
+        page.onAppClick = { [weak self] info in self?.activateApp(info) }
+        page.onFolderClick = { [weak self] folder in self?.openFolder(folder) }
+        page.onBlankClick = { [weak self] in self?.handleBlankClick() }
+        page.onDropAppToBlank = { [weak self] path in self?.removeAppFromFolder(path) }
+        page.onDropAppToFolder = { [weak self] path, folder in self?.addApp(path, to: folder) }
+        page.onDropAppsToFolder = { [weak self] paths, folder in self?.addApps(paths, to: folder) }
+        page.onContextMenu = { [weak self] item in self?.contextMenu(for: item) }
+        page.onLongPressItem = { [weak self] item in self?.handleLongPress(item) }
+        page.onToggleSelectItem = { [weak self] item in self?.toggleSelectItem(item) }
+        page.onSelectionLimitReached = { [weak self] in
+            self?.showToast("最多只能添加 \(Self.maxSelectionCount) 个")
+        }
+        page.onResizeFolder = { [weak self] folder, cols, rows in
+            self?.resizeFolder(folder, cols: cols, rows: rows)
+        }
+        page.getSelectedItemsForDrag = { [weak self] in
+            self?.selectedItems ?? []
+        }
+        page.onReorderDrop = { [weak self] itemIds, targetIndex in
+            self?.handleReorderDrop(itemIds: itemIds, targetPageIndex: index, targetIndex: targetIndex)
+        }
+        return page
     }
 
     private func applyGridConfig() {
@@ -516,8 +549,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.renameFolder(folder, newName: newName)
         }
         popover.onDissolveFolder = { [weak self] in
-            self?.dismissFolderPopover()
-            self?.dissolveFolder(folder)
+            self?.confirmDissolveFolder(folder)
         }
         popover.onClose = { [weak self] in
             self?.dismissFolderPopover()
@@ -554,19 +586,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func backToMain() {
-        dismissFolderPopover()
-        if currentFolderID != nil {
-            currentFolderID = nil
-            reloadData()
-        }
+    private func applySearch(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != searchQuery else { return }
+        if isSelectionMode { exitSelectionMode() }
+        searchQuery = trimmed
+        reloadData(keepPage: 0)
     }
 
-    private func applySearch(_ query: String) {
-        if isSelectionMode { exitSelectionMode() }
-        searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !searchQuery.isEmpty { currentFolderID = nil }
-        reloadData()
+    /// 直接输入即搜索：把焦点交给搜索框，并带上已输入的首个字符
+    private func beginSearch(with initialText: String) {
+        let field = topBar.searchField
+        window?.makeFirstResponder(field)
+        field.stringValue = initialText
+        if let editor = field.currentEditor() {
+            editor.selectedRange = NSRange(location: (initialText as NSString).length, length: 0)
+        }
+        applySearch(initialText)
+    }
+
+    /// ⌘F：聚焦搜索框并全选已有内容
+    private func focusSearchField() {
+        let field = topBar.searchField
+        window?.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
     }
 
     private func handleBlankClick() {
@@ -1012,30 +1055,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func createFolder() {
-        let alert = NSAlert()
-        alert.messageText = "新建文件夹"
-        alert.informativeText = "输入文件夹名称，之后可以把应用拖入该文件夹"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.placeholderString = "文件夹"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "创建")
-        alert.addButton(withTitle: "取消")
-        alert.window.initialFirstResponder = field
-        if alert.runModal() == .alertFirstButtonReturn {
-            let trimmed = field.stringValue.trimmingCharacters(in: .whitespaces)
-            let name = trimmed.isEmpty ? "文件夹" : trimmed
-            let folder = FolderConfig(id: UUID().uuidString, name: name, appPaths: [])
+        let p = scrollView.currentPage
+        presentPrompt(
+            title: "新建文件夹",
+            message: "输入文件夹名称，之后可以把应用拖入该文件夹",
+            placeholder: "文件夹",
+            confirmTitle: "创建"
+        ) { [weak self] input in
+            guard let self else { return }
+            let trimmed = input.trimmingCharacters(in: .whitespaces)
+            let folder = FolderConfig(id: UUID().uuidString,
+                                      name: trimmed.isEmpty ? "文件夹" : trimmed,
+                                      appPaths: [])
 
-            let p = scrollView.currentPage
-            var pageList = currentPagesItems()
+            var pageList = self.currentPagesItems()
             while pageList.count <= p { pageList.append([]) }
             pageList[p].append(.folder(folder))
 
-            config.folders.append(folder)
-            savePagesOrder(pageList)
-            ConfigStore.save(config)
-            reloadData(keepPage: p)
-            openFolder(folder)
+            self.config.folders.append(folder)
+            self.savePagesOrder(pageList)
+            ConfigStore.save(self.config)
+            self.reloadData(keepPage: p)
+            self.openFolder(folder)
         }
     }
 
@@ -1048,20 +1089,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        let alert = NSAlert()
-        alert.messageText = "重命名文件夹"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = folder.name
-        alert.accessoryView = field
-        alert.addButton(withTitle: "确定")
-        alert.addButton(withTitle: "取消")
-        alert.window.initialFirstResponder = field
-        if alert.runModal() == .alertFirstButtonReturn {
-            let name = field.stringValue.trimmingCharacters(in: .whitespaces)
-            guard let idx = config.folders.firstIndex(where: { $0.id == folder.id }) else { return }
-            config.folders[idx].name = name.isEmpty ? "文件夹" : name
-            ConfigStore.save(config)
-            reloadData(keepPage: scrollView.currentPage)
+        presentPrompt(
+            title: "重命名文件夹",
+            placeholder: "文件夹",
+            defaultValue: folder.name,
+            confirmTitle: "确定"
+        ) { [weak self] input in
+            guard let self, let idx = self.config.folders.firstIndex(where: { $0.id == folder.id }) else { return }
+            let name = input.trimmingCharacters(in: .whitespaces)
+            self.config.folders[idx].name = name.isEmpty ? "文件夹" : name
+            ConfigStore.save(self.config)
+            self.reloadData(keepPage: self.scrollView.currentPage)
         }
     }
 
@@ -1074,14 +1112,74 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func deleteFolder(_ folder: FolderConfig) {
-        let alert = NSAlert()
-        alert.messageText = "删除文件夹"
-        alert.informativeText = "确定删除「\(folder.name)」吗？里面的应用将被释放回主界面。"
-        alert.addButton(withTitle: "删除并释放")
-        alert.addButton(withTitle: "取消")
-        if alert.runModal() == .alertFirstButtonReturn {
-            dissolveFolder(folder)
+        presentPrompt(
+            title: "删除文件夹",
+            message: "确定删除「\(folder.name)」吗？里面的应用将被释放回主界面。",
+            confirmTitle: "删除并释放",
+            showsTextField: false
+        ) { [weak self] _ in
+            self?.dissolveFolder(folder)
         }
+    }
+
+    /// 文件夹弹窗里的「解散文件夹」：先收起弹窗，再用窗口内浮层确认
+    private func confirmDissolveFolder(_ folder: FolderConfig) {
+        presentPrompt(
+            title: "解散文件夹",
+            message: "确定要解散「\(folder.name)」吗？里面的应用将被释放回主界面。",
+            confirmTitle: "解散",
+            showsTextField: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.dismissFolderPopover()
+            self.dissolveFolder(folder)
+        }
+    }
+
+    // MARK: - 窗口内浮层（替代 NSAlert.runModal）
+
+    private var activePrompt: PromptOverlayView?
+
+    /// 在启动台窗口内弹出输入 / 确认浮层。
+    ///
+    /// 伪全屏时启动台窗口层级高于 `.modalPanel`，`NSAlert.runModal()` 会被压在窗口后面
+    /// 且阻塞主线程（表现为“界面卡住、弹框点不到”），所以统一改用窗口内浮层。
+    private func presentPrompt(title: String,
+                               message: String? = nil,
+                               placeholder: String? = nil,
+                               defaultValue: String = "",
+                               confirmTitle: String,
+                               showsTextField: Bool = true,
+                               onConfirm: @escaping (String) -> Void) {
+        dismissPrompt()
+        guard let root = window?.contentView else { return }
+        let prompt = PromptOverlayView(
+            title: title,
+            message: message,
+            placeholder: placeholder,
+            defaultValue: defaultValue,
+            confirmTitle: confirmTitle,
+            showsTextField: showsTextField
+        )
+        prompt.onConfirm = { [weak self] value in
+            guard let self else { return }
+            self.activePrompt = nil
+            self.window?.makeFirstResponder(self.scrollView)
+            onConfirm(value)
+        }
+        prompt.onCancel = { [weak self] in
+            guard let self else { return }
+            self.activePrompt = nil
+            self.window?.makeFirstResponder(self.scrollView)
+        }
+        activePrompt = prompt
+        prompt.present(in: root)
+    }
+
+    private func dismissPrompt() {
+        guard let prompt = activePrompt else { return }
+        activePrompt = nil
+        prompt.dismiss()
     }
 
     /// 回收清空的页面（至少保留首页）
@@ -1221,6 +1319,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     // MARK: - 显示 / 隐藏
+    //
+    // 关键约束：窗口背景是 `NSVisualEffectView`(.behindWindow) 毛玻璃。
+    // 一旦对「整个窗口」做 alphaValue 动画，系统在 alpha < 1 期间无法正确采样桌面背景，
+    // 窗口四边/四角会在动画首帧渲染成黑色（即“黑边一闪而过”）。
+    // 因此这里改为：窗口始终保持 alpha = 1 整帧呈现，仅对窗口内容做淡入淡出。
 
     var isVisible: Bool { window?.isVisible == true }
 
@@ -1229,22 +1332,55 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return NSApp.isActive && window?.isKeyWindow == true
     }
 
+    /// 参与淡入淡出的窗口内容（背景毛玻璃始终不透明，避免采样异常）
+    private var contentViews: [NSView] { [topBar, scrollView, selectionTray] }
+
+    private func setContentAlpha(_ alpha: CGFloat,
+                                 animated: Bool,
+                                 duration: TimeInterval = 0.14,
+                                 completion: (() -> Void)? = nil) {
+        guard animated else {
+            for v in contentViews { v.alphaValue = alpha }
+            completion?()
+            return
+        }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            for v in contentViews { v.animator().alphaValue = alpha }
+        } completionHandler: {
+            completion?()
+        }
+    }
+
+    private func fadeInContent() {
+        for v in contentViews { v.alphaValue = 0 }
+        setContentAlpha(1, animated: true)
+    }
+
     func show() {
         guard let window else { return }
         applyWindowLevel()
         if !isPseudoFullScreen {
             window.contentView?.layer?.cornerRadius = 18
+            background.setCornerRadius(18)
         }
-        // 在让窗口显示在屏幕上之前，先确保透明度为 0 并完成全部布局，彻底杜绝闪烁残影
-        window.alphaValue = 0
+        let wasVisible = window.isVisible
+        // 整窗不做 alpha 动画（毛玻璃在 alpha < 1 时无法正确采样桌面背景）
+        window.alphaValue = 1
+        // 上屏前铺好兜底底色，避免毛玻璃首帧采样不到桌面而整块发黑（表现为边框一圈黑线）
+        background.prepareForDisplay()
         window.contentView?.needsLayout = true
         window.contentView?.layoutSubtreeIfNeeded()
+        // 阴影先按最终（圆角后）形状重算，再上屏，避免首帧残留直角阴影边
+        window.invalidateShadow()
+        window.displayIfNeeded()
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.16
-            window.animator().alphaValue = 1
-        }
+        // 窗口完成首次合成后再揭开毛玻璃
+        background.revealGlassAfterFirstFrame()
+        if !wasVisible { fadeInContent() }
+        else { setContentAlpha(1, animated: false) }
         window.makeFirstResponder(scrollView)
     }
 
@@ -1258,21 +1394,36 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             isPseudoFullScreen = true
             window.isMovableByWindowBackground = false
             window.contentView?.layer?.cornerRadius = 0
+            window.contentView?.layer?.masksToBounds = true
+            background.setCornerRadius(0)
             topBar.traffic.isHidden = true
             topBar.setFullscreen(true)
             applyWindowLevel()
             window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
             applyGridConfig()
+            window.invalidateShadow()
         }
         show()
     }
 
     func hide() {
+        dismissPrompt()
         if folderPopoverView != nil { dismissFolderPopover() }
-        if isPseudoFullScreen { restoreFromFullScreen() }
         if isSelectionMode { exitSelectionMode() }
+        clearSearch()
+        persistWindowFrame()
+        // 先移出屏幕再做全屏状态还原：避免还原尺寸的过程被用户看到
         window?.orderOut(nil)
-        window?.alphaValue = 0
+        if isPseudoFullScreen { restoreFromFullScreen() }
+    }
+
+    /// 收起窗口时清空搜索：下次唤起重回完整应用列表，避免“看起来空空如也”的困惑
+    private func clearSearch() {
+        guard !searchQuery.isEmpty || !topBar.searchField.stringValue.isEmpty else { return }
+        topBar.clearSearchField()
+        searchQuery = ""
+        reloadData(keepPage: 0)
     }
 
     private func restoreFromFullScreen() {
@@ -1284,25 +1435,85 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.isMovableByWindowBackground = false
         window.contentView?.layer?.cornerRadius = 18
         window.contentView?.layer?.masksToBounds = true
+        background.setCornerRadius(18)
         topBar.traffic.isHidden = false
         topBar.setFullscreen(false)
         applyWindowLevel()
         window.contentView?.needsLayout = true
         window.contentView?.layoutSubtreeIfNeeded()
+        // 必须立刻按新尺寸重绘：否则缩小后的窗口会短暂显示被拉伸的全屏旧画面（边缘一圈黑）
+        window.displayIfNeeded()
         applyGridConfig()
+        window.invalidateShadow()
     }
 
     func toggle() {
         if isFrontmost { hide() } else { show() }
     }
 
+    /// 菜单栏图标左键：始终以「窗口化小屏」形态呈现（已在窗口化前台时则收起）。
+    func toggleWindowed() {
+        guard let window else { return }
+        if window.isVisible, !isPseudoFullScreen, isScreenTransitioning == false,
+           NSApp.isActive, window.isKeyWindow {
+            hide()
+            return
+        }
+        if isPseudoFullScreen { restoreFromFullScreen() }
+        show()
+    }
+
     @objc private func configDidChange() {
         let page = scrollView.currentPage
+        let previous = config
         config = ConfigStore.load()
         ThemeManager.current = config.theme
-        background.setConfig(config)
-        topBar.setFolderMode(name: currentFolder?.name)
+        // 背景毛玻璃重建（含高斯模糊重算）代价高，且会瞬时闪一下；
+        // 只有背景相关设置真的变了才重建，拖动列间距/图标大小等滑块时保持稳定。
+        if previous.backgroundImagePath != config.backgroundImagePath
+            || previous.bgOpacity != config.bgOpacity
+            || previous.bgBlur != config.bgBlur {
+            background.setConfig(config)
+        }
         reloadData(keepPage: page)
+    }
+
+    // MARK: - 窗口位置记忆
+
+    /// 退出应用前落盘窗口位置（不依赖 hide()）
+    func persistFrameForTermination() {
+        persistWindowFrame()
+    }
+
+    private func persistWindowFrame() {
+        guard let window, !isScreenTransitioning else { return }
+        frameSaveTimer?.invalidate()
+        frameSaveTimer = nil
+        // 全屏时窗口铺满屏幕，应记忆进入全屏前的窗口化位置
+        let frame = (isPseudoFullScreen && frameBeforeFullScreen != .zero)
+            ? frameBeforeFullScreen
+            : window.frame
+        let width = Double(frame.width)
+        let height = Double(frame.height)
+        let x = Double(frame.origin.x)
+        let y = Double(frame.origin.y)
+        // 位置未变化就不落盘：hide() 会在每次启动应用时触发，避免无意义的写文件
+        guard config.windowWidth != width || config.windowHeight != height
+                || config.windowX != x || config.windowY != y else { return }
+        config.windowWidth = width
+        config.windowHeight = height
+        config.windowX = x
+        config.windowY = y
+        ConfigStore.save(config)
+    }
+
+    private func scheduleFrameSave() {
+        frameSaveTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.5, repeats: false) { [weak self] _ in
+            self?.persistWindowFrame()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        frameSaveTimer = timer
     }
 
     // MARK: - 窗口层级
@@ -1407,41 +1618,44 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func togglePseudoFullScreen() {
-        guard let window, !isScreenTransitioning else { return }
+        guard self.window != nil, !isScreenTransitioning else { return }
         isScreenTransitioning = true
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.1
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            window.animator().alphaValue = 0
-        } completionHandler: { [weak self] in
-            guard let self, let window = self.window else { return }
-            if self.isPseudoFullScreen {
-                window.setFrame(self.frameBeforeFullScreen, display: false)
-                self.isPseudoFullScreen = false
-                self.applyWindowLevel()
-                window.isMovableByWindowBackground = false
-                window.contentView?.layer?.cornerRadius = 18
-                self.topBar.traffic.isHidden = false
-                self.topBar.setFullscreen(false)
-            } else {
+        let targetFullscreen = !isPseudoFullScreen
+
+        // 用「内容淡出 → 切换尺寸 → 内容淡入」替代整窗 alpha 动画，原因同 show()：
+        // 整窗 alpha 会让 .behindWindow 毛玻璃在边缘采样异常而发黑。
+        setContentAlpha(0, animated: true, duration: 0.09) { [weak self] in
+            guard let self, let window = self.window else {
+                self?.isScreenTransitioning = false
+                return
+            }
+
+            if targetFullscreen {
                 self.frameBeforeFullScreen = window.frame
                 if let screen = window.screen ?? NSScreen.main {
                     window.setFrame(Self.pseudoFullScreenFrame(for: screen), display: false)
                 }
-                self.isPseudoFullScreen = true
-                self.applyWindowLevel()
-                window.isMovableByWindowBackground = false
-                window.contentView?.layer?.cornerRadius = 0
-                self.topBar.traffic.isHidden = true
-                self.topBar.setFullscreen(true)
+            } else {
+                window.setFrame(self.frameBeforeFullScreen, display: false)
             }
+
+            self.isPseudoFullScreen = targetFullscreen
+            self.applyWindowLevel()
+            window.isMovableByWindowBackground = false
+            let radius: CGFloat = targetFullscreen ? 0 : 18
+            window.contentView?.layer?.cornerRadius = radius
+            window.contentView?.layer?.masksToBounds = true
+            self.background.setCornerRadius(radius)
+            self.topBar.traffic.isHidden = targetFullscreen
+            self.topBar.setFullscreen(targetFullscreen)
+
+            window.contentView?.needsLayout = true
             window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
             self.applyGridConfig()
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.16
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                window.animator().alphaValue = 1
-            } completionHandler: { [weak self] in
+            window.invalidateShadow()
+
+            self.setContentAlpha(1, animated: true, duration: 0.16) { [weak self] in
                 self?.isScreenTransitioning = false
             }
         }
@@ -1451,7 +1665,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let w = window, !isPseudoFullScreen else { return }
         config.windowWidth = Double(w.frame.width)
         config.windowHeight = Double(w.frame.height)
+        config.windowX = Double(w.frame.origin.x)
+        config.windowY = Double(w.frame.origin.y)
         ConfigStore.save(config)
         applyWindowLevel()
+        w.invalidateShadow()
+    }
+
+    /// 拖动窗口后防抖保存位置，下次启动回到原处
+    func windowDidMove(_ notification: Notification) {
+        guard !isScreenTransitioning, !isPseudoFullScreen else { return }
+        scheduleFrameSave()
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        applyWindowLevel()
+        window?.invalidateShadow()
     }
 }

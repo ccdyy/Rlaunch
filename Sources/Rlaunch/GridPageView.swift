@@ -2,7 +2,7 @@ import Cocoa
 import RlaunchCore
 
 /// 网格布局参数
-struct GridLayoutConfig {
+struct GridLayoutConfig: Equatable {
     var columns: Int = 7
     var rows: Int = 5
     var columnSpacing: CGFloat = 24

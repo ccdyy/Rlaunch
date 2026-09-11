@@ -161,6 +161,9 @@ public struct AppConfig: Codable, Equatable {
     // 窗口
     public var windowWidth: Double = 1020
     public var windowHeight: Double = 700
+    /// 上次关闭时的窗口原点（屏幕坐标）；为 nil 表示首次启动，窗口居中显示
+    public var windowX: Double?
+    public var windowY: Double?
     // 行为
     public var hideOnLaunch: Bool = true         // 启动应用后收起界面
     public var launchAtLogin: Bool = false       // 开机自动启动（SMAppService 登录项）
@@ -211,6 +214,8 @@ public struct AppConfig: Codable, Equatable {
         folders = try c.decodeIfPresent([FolderConfig].self, forKey: .folders) ?? []
         windowWidth = try c.decodeIfPresent(Double.self, forKey: .windowWidth) ?? 1020
         windowHeight = try c.decodeIfPresent(Double.self, forKey: .windowHeight) ?? 700
+        windowX = try c.decodeIfPresent(Double.self, forKey: .windowX)
+        windowY = try c.decodeIfPresent(Double.self, forKey: .windowY)
         hideOnLaunch = try c.decodeIfPresent(Bool.self, forKey: .hideOnLaunch) ?? true
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         itemOrder = try c.decodeIfPresent([String].self, forKey: .itemOrder) ?? []

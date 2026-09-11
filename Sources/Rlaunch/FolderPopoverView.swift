@@ -37,6 +37,8 @@ final class FolderPopoverView: NSView {
     private let scrollView = NSScrollView()
     private let gridContainer = FlippedGridView()
     private var appItemViews: [AppItemView] = []
+    /// 当前生效的网格规格（由 layout() 按卡片尺寸动态推算）
+    private var appliedGridConfig: GridLayoutConfig?
 
     init(
         folder: FolderConfig,
@@ -162,19 +164,19 @@ final class FolderPopoverView: NSView {
     private func updateThemeAppearance() {
         let dark = isDarkMode
         if dark {
-            // 暗色模式：背景遮罩适度沉浸聚焦；卡片近乎完全不透明（alpha: 0.98），彻底杜绝与底层主界面的透视交叠混杂
-            dimmingMask.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.40).cgColor
-            cardView.layer?.backgroundColor = NSColor(white: 0.18, alpha: 0.98).cgColor
-            cardView.layer?.borderColor = NSColor.white.withAlphaComponent(0.20).cgColor
+            // 暗色：中性石墨灰（而非近黑），配细边框，避免整块“糊成一团黑”
+            dimmingMask.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
+            cardView.layer?.backgroundColor = NSColor(calibratedWhite: 0.28, alpha: 0.98).cgColor
+            cardView.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
             cardShadowContainer.layer?.shadowColor = NSColor.black.cgColor
-            cardShadowContainer.layer?.shadowOpacity = 0.50
+            cardShadowContainer.layer?.shadowOpacity = 0.45
         } else {
-            // 亮色模式：纯净不透明（alpha: 0.99）白瓷卡片质感，轮廓清晰扎实，无任何透视穿透干扰
-            dimmingMask.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.20).cgColor
-            cardView.layer?.backgroundColor = NSColor(white: 0.98, alpha: 0.99).cgColor
-            cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.12).cgColor
+            // 亮色：纯净白瓷卡片
+            dimmingMask.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.16).cgColor
+            cardView.layer?.backgroundColor = NSColor(calibratedWhite: 0.99, alpha: 0.99).cgColor
+            cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.10).cgColor
             cardShadowContainer.layer?.shadowColor = NSColor.black.cgColor
-            cardShadowContainer.layer?.shadowOpacity = 0.22
+            cardShadowContainer.layer?.shadowOpacity = 0.20
         }
     }
 
@@ -220,7 +222,8 @@ final class FolderPopoverView: NSView {
             placePendingButton.isHidden = true
         }
 
-        let cfg = GridLayoutConfig(columns: 4, rows: 3, columnSpacing: 18, rowSpacing: 18, iconSize: 58)
+        let cfg = appliedGridConfig
+            ?? GridLayoutConfig(columns: 4, rows: 3, columnSpacing: 18, rowSpacing: 18, iconSize: 58)
 
         for app in matchedApps {
             let item = GridItem.app(app)
@@ -290,14 +293,8 @@ final class FolderPopoverView: NSView {
     }
 
     @objc private func dissolveClicked() {
-        let alert = NSAlert()
-        alert.messageText = "解散文件夹"
-        alert.informativeText = "确定要解散「\(folder.name)」吗？里面的应用将被释放回主界面。"
-        alert.addButton(withTitle: "解散")
-        alert.addButton(withTitle: "取消")
-        if alert.runModal() == .alertFirstButtonReturn {
-            onDissolveFolder?()
-        }
+        // 确认交给窗口内浮层处理：伪全屏时 NSAlert 会被压在窗口后面且阻塞主线程
+        onDissolveFolder?()
     }
 
     @objc private func placePendingClicked() {
@@ -322,10 +319,31 @@ final class FolderPopoverView: NSView {
 
         dimmingMask.frame = b
 
-        let maxW = min(620, b.width - 60)
-        let maxH = min(460, b.height - 80)
-        let cardW: CGFloat = max(380, maxW)
-        let cardH: CGFloat = max(280, maxH)
+        // 卡片尺寸：宽度约占窗口 2/3，高度按内容收紧；
+        // 关键是最大高度必须留出充足上下留白——之前用 `b.height - 40`，
+        // 应用较多的文件夹会把卡片撑到几乎顶住窗口上下边。
+        let hMargin = min(120, max(56, b.width * 0.11))
+        let vMargin = min(120, max(48, b.height * 0.15))
+        let cardW = min(max(b.width * 0.66, 380), 1040, b.width - hMargin * 2)
+        let maxCardH = min(max(b.height * 0.68, 260), 760, b.height - vMargin * 2)
+        let scrollW = max(120, cardW - 32)
+        // 图标尺寸的高度约束参考卡片上限高度（避免与 cardH 形成循环依赖）
+        let maxScrollH = max(60, maxCardH - 38 - 54)
+
+        // 先按宽度推算网格，再据内容行数收紧卡片高度：应用少时不留大片空白，应用多时才拉满
+        let cfg = Self.gridConfig(forScrollWidth: scrollW, scrollHeight: maxScrollH)
+        if appliedGridConfig != cfg {
+            appliedGridConfig = cfg
+            for view in appItemViews {
+                view.applyLayoutConfig(cfg)
+                view.needsLayout = true
+            }
+        }
+
+        let rows = max(1, (appItemViews.count + cfg.columns - 1) / cfg.columns)
+        let gridH = CGFloat(rows) * cfg.cellHeight + CGFloat(rows + 1) * cfg.rowSpacing
+        let neededH = gridH + 38 + 54 + 18 // 中间滚动区上下留白 + 头部 + 底部
+        let cardH = min(max(neededH, 260), maxCardH)
         let cardX = (b.width - cardW) / 2
         let cardY = (b.height - cardH) / 2
         let cardRect = NSRect(x: cardX, y: cardY, width: cardW, height: cardH)
@@ -334,39 +352,34 @@ final class FolderPopoverView: NSView {
         cardView.frame = cardShadowContainer.bounds
 
         // 头部
-        titleField.frame = NSRect(x: 24, y: cardH - 46, width: cardW - 220, height: 26)
+        titleField.frame = NSRect(x: 24, y: cardH - 46, width: max(120, cardW - 240), height: 26)
         dissolveButton.frame = NSRect(x: cardW - 130, y: cardH - 44, width: 80, height: 22)
         closeButton.frame = NSRect(x: cardW - 42, y: cardH - 44, width: 22, height: 22)
 
         // 底部应用总数与放入按钮
-        countLabel.frame = NSRect(x: 24, y: 12, width: 140, height: 18)
+        countLabel.frame = NSRect(x: 24, y: 12, width: 200, height: 18)
 
         if !placePendingButton.isHidden {
-            let btnW: CGFloat = 140, btnH: CGFloat = 24
+            let btnW: CGFloat = 150, btnH: CGFloat = 24
             placePendingButton.frame = NSRect(x: cardW - btnW - 20, y: 10, width: btnW, height: btnH)
         }
 
         // 中间滚动区域
         let scrollY: CGFloat = 38
-        let scrollH = cardH - scrollY - 54
-        scrollView.frame = NSRect(x: 16, y: scrollY, width: cardW - 32, height: scrollH)
+        let scrollH = max(60, cardH - scrollY - 54)
+        scrollView.frame = NSRect(x: 16, y: scrollY, width: scrollW, height: scrollH)
 
-        // 网格内容计算：4 列排布
-        let cols = 4
-        let iconS: CGFloat = 58
-        let labelH: CGFloat = 28
-        let cellW: CGFloat = iconS + 20
-        let cellH: CGFloat = iconS + labelH + 12
-        let colSpacing: CGFloat = max(8, (scrollView.frame.width - CGFloat(cols) * cellW) / CGFloat(cols + 1))
-        let rowSpacing: CGFloat = 16
+        let cellW = cfg.cellWidth
+        let cellH = cfg.cellHeight
+        let colSpacing = cfg.columnSpacing
+        let rowSpacing = cfg.rowSpacing
 
-        let rows = max(1, (appItemViews.count + cols - 1) / cols)
-        let contentH = max(scrollH, CGFloat(rows) * cellH + CGFloat(rows + 1) * rowSpacing)
-        gridContainer.frame = NSRect(x: 0, y: 0, width: scrollView.frame.width, height: contentH)
+        let contentH = max(scrollH, gridH)
+        gridContainer.frame = NSRect(x: 0, y: 0, width: scrollW, height: contentH)
 
         for (i, view) in appItemViews.enumerated() {
-            let r = i / cols
-            let c = i % cols
+            let r = i / cfg.columns
+            let c = i % cfg.columns
             let x = colSpacing + CGFloat(c) * (cellW + colSpacing)
             let y = rowSpacing + CGFloat(r) * (cellH + rowSpacing)
             view.frame = NSRect(x: x, y: y, width: cellW, height: cellH)
@@ -375,5 +388,29 @@ final class FolderPopoverView: NSView {
         // 默认显示最上面的应用：重置滚动条至顶部
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: 0))
         scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    /// 依据可用宽度与高度推算网格：卡片越大 → 列数越多、图标越大。
+    /// - 列数按四舍五入取整，并封顶 8 列；否则全屏时列数过多会让单元格反而变窄、图标比窗口化时还小。
+    /// - 图标尺寸再受可用高度约束，保证矮卡片里至少能完整看到两行，避免小窗口里图标虚大却只能滚动。
+    private static func gridConfig(forScrollWidth width: CGFloat, scrollHeight: CGFloat) -> GridLayoutConfig {
+        let targetCellWidth = max(84, min(118, width / 6.5))
+        let rawColumns = Int(((width - 16) / targetCellWidth).rounded())
+        let columns = max(3, min(8, rawColumns))
+        let spacing = max(12, min(26, width * 0.022))
+        let cellWidth = (width - spacing * CGFloat(columns + 1)) / CGFloat(columns)
+        var iconSize = max(36, min(92, cellWidth * 0.78))
+        if scrollHeight > 0 {
+            // cellHeight = iconSize + labelHeight(26) + 16，两行 + 两个行间距需落在可视高度内
+            let maxIconByHeight = (scrollHeight - spacing * 2) / 2 - 42
+            iconSize = min(iconSize, max(36, maxIconByHeight))
+        }
+        return GridLayoutConfig(
+            columns: columns,
+            rows: 3,
+            columnSpacing: spacing,
+            rowSpacing: spacing,
+            iconSize: iconSize
+        )
     }
 }

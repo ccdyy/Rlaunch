@@ -151,6 +151,19 @@ func testConfigStore() throws {
     check(legacyLoaded.pageOrders.first?.first == "/Applications/Safari.app",
           "旧版路径格式 pageOrders 可正常读写")
 
+    // 窗口位置记忆往返（首次启动无该字段时应为 nil）
+    var frameCfg = cfg
+    frameCfg.windowWidth = 1024
+    frameCfg.windowHeight = 720
+    frameCfg.windowX = 320
+    frameCfg.windowY = 180
+    check(ConfigStore.save(frameCfg), "保存窗口位置配置")
+    let frameLoaded = ConfigStore.load()
+    check(frameLoaded.windowX == 320 && frameLoaded.windowY == 180,
+          "窗口位置 windowX/windowY 往返一致")
+    check(frameLoaded.windowWidth == 1024 && frameLoaded.windowHeight == 720,
+          "窗口尺寸往返一致")
+
     check(ConfigStore.save(cfg), "恢复默认配置")
 
     // 迁移分支 1：旧默认扫描目录 → 自动补上 /System/Applications
@@ -183,9 +196,22 @@ func testConfigStore() throws {
         check(decoded.pinchEnabled == true && decoded.pinchThreshold == 0.7,
               "旧 gesture 字段迁移为捏合字段")
         check(decoded.hotKeyKeyCode == nil && decoded.hotKeyEnabled == false, "旧配置默认无快捷键")
+        check(decoded.windowX == nil && decoded.windowY == nil,
+              "旧配置无窗口位置时保持 nil（首启居中）")
     } else {
         check(false, "旧格式配置可正常解码（缺新字段不崩溃）")
     }
+}
+
+// MARK: - 版本信息
+
+func testAppVersion() {
+    print("AppVersion:")
+    // 自测可执行文件没有 Info.plist，应安全回退为 dev 而不是崩溃
+    check(AppVersion.short == "dev", "无 Info.plist 时版本回退为 dev")
+    check(AppVersion.displayTag == "dev", "无 Info.plist 时 tag 显示为 dev")
+    check(AppVersion.displayFull == "dev", "无 Info.plist 时完整版本显示为 dev")
+    check(AppVersion.repositoryURL == "https://github.com/ccdyy/Rlaunch", "GitHub 仓库地址正确")
 }
 
 // MARK: - 文件夹与网格单元测试
@@ -346,6 +372,7 @@ func testFolderAndGridItem() throws {
 
 do {
     testFuzzySearch()
+    testAppVersion()
     try testScanner()
     try testConfigStore()
     try testFolderAndGridItem()
