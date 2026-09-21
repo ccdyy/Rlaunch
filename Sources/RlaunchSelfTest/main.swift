@@ -231,6 +231,7 @@ func testConfigStore() throws {
               "旧配置无窗口位置时保持 nil（首启居中）")
         check(decoded.hiddenAppPaths.isEmpty, "旧配置无隐藏列表时默认为空")
         check(decoded.language == .zhHans, "旧配置无语言字段时默认为简体中文")
+        check(decoded.darkBgPreset == "default" && decoded.lightBgPreset == "softGray", "旧配置缺背景预设字段时使用默认值")
     } else {
         check(false, "旧格式配置可正常解码（缺新字段不崩溃）")
     }
@@ -299,6 +300,8 @@ func testApplySettings() {
     panel.backgroundImagePath = "/tmp/bg.png"
     panel.bgOpacity = 0.42
     panel.bgBlur = 33
+    panel.darkBgPreset = "midnight"
+    panel.lightBgPreset = "warmOat"
     panel.columns = 9
     panel.rows = 4
     panel.columnSpacing = 31
@@ -319,6 +322,7 @@ func testApplySettings() {
     check(merged.language == .en, "语言会被持久化（曾漏掉导致切换无效）")
     check(merged.hiddenAppPaths == ["/hidden.app"], "隐藏应用列表会被持久化（曾漏掉导致恢复无效）")
     check(merged.theme == .light && merged.bgOpacity == 0.42 && merged.bgBlur == 33, "外观设置会被持久化")
+    check(merged.darkBgPreset == "midnight" && merged.lightBgPreset == "warmOat", "背景颜色预设会被持久化")
     check(merged.columns == 9 && merged.rows == 4 && merged.iconSize == 96, "网格设置会被持久化")
     check(merged.columnSpacing == 31 && merged.rowSpacing == 32 && merged.fullscreenSpacingScale == 2.2,
           "间距设置会被持久化")

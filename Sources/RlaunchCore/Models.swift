@@ -131,6 +131,93 @@ public enum Theme: String, Codable, CaseIterable {
     }
 }
 
+// MARK: - 背景预设与纹理
+
+public enum BackgroundTexture: String, Codable, CaseIterable {
+    case none
+    case noise       // 细腻磨砂噪点（胶片微粒/高级卡纸质感）
+    case twill       // 45° 碳纤微斜纹（科技暗调/亚麻微编织）
+    case dotGrid     // 极客微点阵（建筑/设计图纸点阵）
+    case grid        // 极细方格网（经典工程绘图方格）
+    case brushed     // 横向金属微拉丝（铝合金细腻质感）
+}
+
+public struct BackgroundPreset: Equatable {
+    public let id: String
+    public let name: String
+    public let hexColor: String
+    public let red: Double
+    public let green: Double
+    public let blue: Double
+    public let tintOpacity: Double
+    public let texture: BackgroundTexture
+
+    public init(
+        id: String,
+        name: String,
+        hexColor: String,
+        red: Double,
+        green: Double,
+        blue: Double,
+        tintOpacity: Double,
+        texture: BackgroundTexture = .none
+    ) {
+        self.id = id
+        self.name = name
+        self.hexColor = hexColor
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.tintOpacity = tintOpacity
+        self.texture = texture
+    }
+}
+
+public enum BackgroundPresets {
+    public static var darkPresets: [BackgroundPreset] {
+        [
+            // 经典纯色系
+            BackgroundPreset(id: "default", name: L10n.t("默认深黑"), hexColor: "#1C1D22", red: 0.11, green: 0.11, blue: 0.13, tintOpacity: 0.38, texture: .none),
+            BackgroundPreset(id: "obsidian", name: L10n.t("曜石炭黑"), hexColor: "#0E1014", red: 0.05, green: 0.06, blue: 0.08, tintOpacity: 0.58, texture: .none),
+            BackgroundPreset(id: "midnight", name: L10n.t("极夜深蓝"), hexColor: "#101B2E", red: 0.06, green: 0.10, blue: 0.18, tintOpacity: 0.52, texture: .none),
+            BackgroundPreset(id: "plum", name: L10n.t("紫檀暗调"), hexColor: "#221426", red: 0.13, green: 0.08, blue: 0.15, tintOpacity: 0.52, texture: .none),
+            BackgroundPreset(id: "forest", name: L10n.t("午夜墨绿"), hexColor: "#10221A", red: 0.06, green: 0.13, blue: 0.10, tintOpacity: 0.52, texture: .none),
+            BackgroundPreset(id: "titanium", name: L10n.t("钛金冷灰"), hexColor: "#20242B", red: 0.12, green: 0.14, blue: 0.17, tintOpacity: 0.50, texture: .none),
+            // 质感纹理系（打破纯色单调）
+            BackgroundPreset(id: "carbonTwill", name: L10n.t("碳纤斜纹"), hexColor: "#14171D", red: 0.08, green: 0.09, blue: 0.11, tintOpacity: 0.60, texture: .twill),
+            BackgroundPreset(id: "darkMatte", name: L10n.t("微粒磨砂"), hexColor: "#16171B", red: 0.09, green: 0.09, blue: 0.11, tintOpacity: 0.55, texture: .noise),
+            BackgroundPreset(id: "darkDotGrid", name: L10n.t("极客点阵"), hexColor: "#121824", red: 0.07, green: 0.09, blue: 0.14, tintOpacity: 0.56, texture: .dotGrid),
+            BackgroundPreset(id: "brushedSteel", name: L10n.t("金属拉丝"), hexColor: "#1E2229", red: 0.12, green: 0.13, blue: 0.16, tintOpacity: 0.52, texture: .brushed),
+        ]
+    }
+
+    public static var lightPresets: [BackgroundPreset] {
+        [
+            // 柔和纯色系
+            BackgroundPreset(id: "softGray", name: L10n.t("柔和暖灰"), hexColor: "#E6E7EB", red: 0.90, green: 0.91, blue: 0.92, tintOpacity: 0.65, texture: .none),
+            BackgroundPreset(id: "warmOat", name: L10n.t("燕麦暖白"), hexColor: "#EFECE5", red: 0.94, green: 0.92, blue: 0.90, tintOpacity: 0.68, texture: .none),
+            BackgroundPreset(id: "iceMist", name: L10n.t("雾霭冰蓝"), hexColor: "#E0E8F2", red: 0.88, green: 0.91, blue: 0.95, tintOpacity: 0.65, texture: .none),
+            BackgroundPreset(id: "sage", name: L10n.t("鼠尾草绿"), hexColor: "#E2ECE5", red: 0.88, green: 0.93, blue: 0.89, tintOpacity: 0.65, texture: .none),
+            BackgroundPreset(id: "coolSilver", name: L10n.t("极简冷银"), hexColor: "#DFE3E9", red: 0.87, green: 0.89, blue: 0.91, tintOpacity: 0.66, texture: .none),
+            BackgroundPreset(id: "blush", name: L10n.t("淡暮柔粉"), hexColor: "#F2E8E8", red: 0.95, green: 0.91, blue: 0.91, tintOpacity: 0.65, texture: .none),
+            BackgroundPreset(id: "classic", name: L10n.t("经典磨砂"), hexColor: "#F5F5F7", red: 0.96, green: 0.96, blue: 0.97, tintOpacity: 0.18, texture: .none),
+            // 质感纹理系（打破纯色单调）
+            BackgroundPreset(id: "linenWeave", name: L10n.t("亚麻棉麻"), hexColor: "#ECE8E1", red: 0.92, green: 0.91, blue: 0.88, tintOpacity: 0.70, texture: .twill),
+            BackgroundPreset(id: "artPaper", name: L10n.t("艺术卡纸"), hexColor: "#EAE7E1", red: 0.91, green: 0.90, blue: 0.88, tintOpacity: 0.68, texture: .noise),
+            BackgroundPreset(id: "designGrid", name: L10n.t("极细方格"), hexColor: "#E4E6EB", red: 0.89, green: 0.90, blue: 0.92, tintOpacity: 0.68, texture: .grid),
+            BackgroundPreset(id: "paperDotGrid", name: L10n.t("绘图点阵"), hexColor: "#E9ECEE", red: 0.91, green: 0.92, blue: 0.93, tintOpacity: 0.68, texture: .dotGrid),
+        ]
+    }
+
+    public static func findDark(id: String) -> BackgroundPreset {
+        darkPresets.first(where: { $0.id == id }) ?? darkPresets[0]
+    }
+
+    public static func findLight(id: String) -> BackgroundPreset {
+        lightPresets.first(where: { $0.id == id }) ?? lightPresets[0]
+    }
+}
+
 // MARK: - 应用配置
 
 public struct AppConfig: Codable, Equatable {
@@ -141,6 +228,8 @@ public struct AppConfig: Codable, Equatable {
     public var backgroundImagePath: String?
     public var bgOpacity: Double = 0.85          // 0.15 ~ 1.0
     public var bgBlur: Double = 0                // 0 ~ 60
+    public var darkBgPreset: String = "default"  // 深色模式预设色
+    public var lightBgPreset: String = "softGray" // 明亮模式预设色（默认柔和暖灰，不再刺眼）
     // 网格
     public var columns: Int = 7
     public var rows: Int = 5
@@ -199,6 +288,8 @@ public struct AppConfig: Codable, Equatable {
         backgroundImagePath = try c.decodeIfPresent(String.self, forKey: .backgroundImagePath)
         bgOpacity = try c.decodeIfPresent(Double.self, forKey: .bgOpacity) ?? 0.85
         bgBlur = try c.decodeIfPresent(Double.self, forKey: .bgBlur) ?? 0
+        darkBgPreset = try c.decodeIfPresent(String.self, forKey: .darkBgPreset) ?? "default"
+        lightBgPreset = try c.decodeIfPresent(String.self, forKey: .lightBgPreset) ?? "softGray"
         columns = try c.decodeIfPresent(Int.self, forKey: .columns) ?? 7
         rows = try c.decodeIfPresent(Int.self, forKey: .rows) ?? 5
         spacing = try c.decodeIfPresent(Double.self, forKey: .spacing) ?? 24
@@ -243,6 +334,8 @@ public struct AppConfig: Codable, Equatable {
         backgroundImagePath = source.backgroundImagePath
         bgOpacity = source.bgOpacity
         bgBlur = source.bgBlur
+        darkBgPreset = source.darkBgPreset
+        lightBgPreset = source.lightBgPreset
         columns = source.columns
         rows = source.rows
         columnSpacing = source.columnSpacing

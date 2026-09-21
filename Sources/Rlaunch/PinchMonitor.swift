@@ -1,14 +1,24 @@
 import Cocoa
 import RlaunchCore
 
-/// 全局捏合监听：四指/五指「捏合」（手指间距缩小）触发唤起（隐藏时打开并全屏）。
+/// 全局捏合与张开手势动作
+public enum PinchGestureAction: Equatable {
+    /// 四指或五指捏合（手指间距缩小：用于唤起/分屏切换）
+    case pinchIn
+    /// 四指或五指张开（手指间距放大：用于关闭）
+    case pinchOut
+}
+
+/// 全局手势监听：四指/五指「捏合」（手指间距缩小）与「张开」（手指间距扩大）。
 ///
 /// 主路径：MultitouchSupport 私有框架直接读取触控板触点数据——
 /// - 无需任何权限，不受系统手势保留影响，能精确统计手指数；
 /// - 触点结构体（MTTouch）字段偏移来自公开逆向定义，运行首帧日志用于核对。
 /// 回退路径：CGEventTap 监听系统 magnify 事件（需要「辅助功能」权限）。
 final class PinchMonitor {
+    var onGestureAction: ((PinchGestureAction) -> Void)?
     var onTrigger: (() -> Void)?
+    var onSpreadTrigger: (() -> Void)?
 
     private(set) var isRunning = false
 
@@ -19,6 +29,7 @@ final class PinchMonitor {
     private var mtLogFrames = 0
     private let mtLock = NSLock()
     private var requiredShrink: Float = 0.2
+    private var requiredExpand: Float = 0.22
     private var armed = false
     private var fired = false
     private var spanInitial: Float = 0
@@ -54,21 +65,22 @@ final class PinchMonitor {
         stop()
         guard config.pinchEnabled else { return }
         requiredShrink = shrink(for: config.pinchThreshold)
+        requiredExpand = expand(for: config.pinchThreshold)
         threshold = CGFloat(config.pinchThreshold)
-        pinLog("启动捏合监听 AXIsProcessTrusted=\(AXIsProcessTrusted())")
+        pinLog("启动手势监听 AXIsProcessTrusted=\(AXIsProcessTrusted())")
         let mtOK = startMultitouch()
         let tapOK = startEventTap() // 与 MT 并行；触发有冷却去重
         if mtOK && tapOK {
             isRunning = true
-            pinLog("捏合监听已启用（触点数据 + 手势事件并行）")
+            pinLog("手势监听已启用（触点数据 + 手势事件并行）")
         } else if mtOK {
             isRunning = true
-            pinLog("捏合监听已启用（触控板触点数据）")
+            pinLog("手势监听已启用（触控板触点数据）")
         } else if tapOK {
             isRunning = true
-            pinLog("捏合监听已启用（系统手势事件，需辅助功能权限）")
+            pinLog("手势监听已启用（系统手势事件，需辅助功能权限）")
         } else {
-            pinLog("捏合监听启用失败（无触控板数据源，且手势事件监听需辅助功能权限）")
+            pinLog("手势监听启用失败（无触控板数据源，且手势事件监听需辅助功能权限）")
         }
         startLocalDiagnostics()
         startWakeObservers()
@@ -80,6 +92,7 @@ final class PinchMonitor {
         if config.pinchEnabled {
             threshold = CGFloat(config.pinchThreshold)
             requiredShrink = shrink(for: config.pinchThreshold)
+            requiredExpand = expand(for: config.pinchThreshold)
             if !isRunning {
                 start(config: config)
             }
@@ -178,18 +191,28 @@ final class PinchMonitor {
 
     private var lastTriggerAt: TimeInterval = 0
 
-    private func fireTrigger(_ source: String) {
+    private func fireGesture(_ action: PinchGestureAction, source: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let now = ProcessInfo.processInfo.systemUptime
-            guard now - self.lastTriggerAt > 1.2 else {
-                self.pinLog("触发冷却中，忽略（\(source)）")
+            guard now - self.lastTriggerAt > 0.35 else {
+                self.pinLog("触发冷却中，忽略（\(source) \(action)）")
                 return
             }
             self.lastTriggerAt = now
-            self.pinLog("触发唤起（\(source)）")
-            self.onTrigger?()
+            self.pinLog("触发手势（\(source) \(action)）")
+            self.onGestureAction?(action)
+            switch action {
+            case .pinchIn:
+                self.onTrigger?()
+            case .pinchOut:
+                self.onSpreadTrigger?()
+            }
         }
+    }
+
+    private func fireTrigger(_ source: String) {
+        fireGesture(.pinchIn, source: source)
     }
 
     // MARK: - 本地手势事件诊断（应用在前台时收到的 magnify，用于核对系统手势上报）
@@ -355,8 +378,14 @@ final class PinchMonitor {
     private func updatePinch(fingerCount: Int, positions: [(Float, Float)]) {
         mtLock.lock()
         defer { mtLock.unlock() }
+        // 若手指数量小于 4（手指抬起、离板，或捏拢时被触控板合并为少于4指）：
         guard fingerCount >= 4 else {
-            if fingerCount <= 2 { armed = false; fired = false; spanInitial = 0 }
+            // 只要手指数减少，重置武装状态与已触发状态，允许下一次捏合随时触发
+            if fired || fingerCount <= 2 {
+                armed = false
+                fired = false
+                spanInitial = 0
+            }
             return
         }
         let span = maxSpan(positions)
@@ -364,14 +393,24 @@ final class PinchMonitor {
             armed = true
             fired = false
             spanInitial = max(span, 0.001)
-            pinLog("捏合准备 手指数=\(fingerCount) 初始跨度=\(String(format: "%.3f", spanInitial))")
+            pinLog("手势准备 手指数=\(fingerCount) 初始跨度=\(String(format: "%.3f", spanInitial))")
             return
         }
+        // 手指落下展开过程中，如果跨度比初始跨度更大，动态更新初始基准，捕捉最大张开跨度
+        if !fired && span > spanInitial {
+            spanInitial = span
+        }
         let ratio = span / spanInitial
-        if !fired, ratio <= 1 - requiredShrink {
-            fired = true
-            pinLog("捏合达标 手指数=\(fingerCount) 跨度=\(String(format: "%.3f", spanInitial))→\(String(format: "%.3f", span))")
-            fireTrigger("触点数据")
+        if !fired {
+            if ratio <= 1 - requiredShrink {
+                fired = true
+                pinLog("捏合达标(收缩) 手指数=\(fingerCount) 跨度=\(String(format: "%.3f", spanInitial))→\(String(format: "%.3f", span))")
+                fireGesture(.pinchIn, source: "触点数据")
+            } else if ratio >= 1 + requiredExpand {
+                fired = true
+                pinLog("张开达标(放大) 手指数=\(fingerCount) 跨度=\(String(format: "%.3f", spanInitial))→\(String(format: "%.3f", span))")
+                fireGesture(.pinchOut, source: "触点数据")
+            }
         }
     }
 
@@ -391,6 +430,11 @@ final class PinchMonitor {
     /// 灵敏度阈值（0.3~2.0，默认 0.7）→ 需要的跨度收缩比例（0.15~0.45）
     private func shrink(for threshold: Double) -> Float {
         Float(min(0.45, max(0.15, 0.10 + 0.15 * threshold)))
+    }
+
+    /// 灵敏度阈值（0.3~2.0，默认 0.7）→ 需要的跨度扩张比例（0.15~0.45）
+    private func expand(for threshold: Double) -> Float {
+        Float(min(0.45, max(0.15, 0.12 + 0.15 * threshold)))
     }
 
     // MARK: - CGEventTap 回退
@@ -478,8 +522,10 @@ final class PinchMonitor {
         return (pts.count, m, desc)
     }
 
+    private var streamSpanStart: Float = 0
+
     private func handleTapEvent(type: CGEventType, event: CGEvent) {
-        guard onTrigger != nil, let ns = NSEvent(cgEvent: event) else { return }
+        guard onTrigger != nil || onGestureAction != nil, let ns = NSEvent(cgEvent: event) else { return }
         let info = touchInfo(ns)
         switch type.rawValue {
         case Self.eventGestureStarted:
@@ -501,10 +547,16 @@ final class PinchMonitor {
             accumulation += CGFloat(mag)
             let magnitude = abs(accumulation)
             let fingersOK = maxFingers == 0 || maxFingers >= 4
-            if fingersOK, magnitude >= threshold, accumulation < 0, !tapFired {
-                tapFired = true
-                accumulation = 0
-                fireTrigger("缩放阈值")
+            if fingersOK, magnitude >= threshold, !tapFired {
+                if accumulation < 0 {
+                    tapFired = true
+                    accumulation = 0
+                    fireGesture(.pinchIn, source: "缩放阈值(捏合)")
+                } else if accumulation > 0 {
+                    tapFired = true
+                    accumulation = 0
+                    fireGesture(.pinchOut, source: "缩放阈值(张开)")
+                }
             }
         case Self.eventGestureEnded:
             updateSpanTracking(count: info.count, span: info.span)
@@ -513,29 +565,38 @@ final class PinchMonitor {
         }
     }
 
-    /// 四指以上期间跟踪触点间距最大/最小值；收缩比例达标即判定捏合并触发。
+    /// 四指以上期间跟踪触点间距最大/最小值；收缩或张开比例达标即判定手势并触发。
     /// 每次「四指落下 → 全部抬起」只允许触发一次（tapFired 仅在新手势开始时重置），
-    /// 避免同一次捏合内多次点火造成关闭后又重新打开。
+    /// 避免同一次手势内多次点火造成关闭后又重新打开。
     private func updateSpanTracking(count: Int, span: Float) {
         guard count >= 4 else {
-            if count <= 1 { resetSpanTracking() } // 手指全部抬起：结束本次手势
+            if tapFired || count <= 2 { resetSpanTracking() } // 手指抬起或触发后离板：重置本次手势
             return
         }
         if !sawFourPlus { // 新一次四指手势：以当前间距为基线并重新武装
             sawFourPlus = true
             streamSpanMax = span
             streamSpanMin = span
+            streamSpanStart = max(span, 0.001)
             tapFired = false
         } else {
             streamSpanMax = max(streamSpanMax, span)
             streamSpanMin = min(streamSpanMin, span)
+            if !tapFired && span > streamSpanStart {
+                streamSpanStart = span
+            }
         }
-        guard !tapFired, streamSpanMax > 0.02, streamSpanMax > streamSpanMin else { return }
-        let ratio = streamSpanMin / streamSpanMax
-        if ratio <= 1 - requiredShrink {
+        guard !tapFired, streamSpanStart > 0.02 else { return }
+        let shrinkRatio = streamSpanMin / streamSpanStart
+        let expandRatio = streamSpanMax / streamSpanStart
+        if shrinkRatio <= 1 - requiredShrink {
             tapFired = true
-            pinLog("捏合触发(跨度) 收缩=\(String(format: "%.2f", ratio)) span=\(String(format: "%.3f", streamSpanMax))→\(String(format: "%.3f", streamSpanMin))")
-            fireTrigger("跨度检测")
+            pinLog("捏合触发(跨度) 收缩=\(String(format: "%.2f", shrinkRatio)) span=\(String(format: "%.3f", streamSpanStart))→\(String(format: "%.3f", streamSpanMin))")
+            fireGesture(.pinchIn, source: "跨度检测(捏合)")
+        } else if expandRatio >= 1 + requiredExpand {
+            tapFired = true
+            pinLog("张开触发(跨度) 放大=\(String(format: "%.2f", expandRatio)) span=\(String(format: "%.3f", streamSpanStart))→\(String(format: "%.3f", streamSpanMax))")
+            fireGesture(.pinchOut, source: "跨度检测(张开)")
         }
     }
 
@@ -544,5 +605,6 @@ final class PinchMonitor {
         tapFired = false
         streamSpanMax = 0
         streamSpanMin = .greatestFiniteMagnitude
+        streamSpanStart = 0
     }
 }

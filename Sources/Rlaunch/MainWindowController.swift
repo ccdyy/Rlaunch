@@ -21,6 +21,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private let background = BackgroundView()
     private let topBar = TopBarView()
+    private let bottomPaginationView = BottomPaginationView()
     private let selectionTray = SelectionTrayView()
     private let scrollView = SnapScrollView()
     private let pagesContainer = NSView()
@@ -125,8 +126,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             c.background.frame = b
             c.topBar.frame = NSRect(x: 0, y: b.height - 56 - topInset, width: b.width, height: 56)
 
-            let scrollH = max(b.height - 56 - topInset, 0)
-            c.scrollView.frame = NSRect(x: 0, y: 0, width: b.width, height: scrollH)
+            // 底部分页栏：放在界面下方正中间，小于等于 5 页时不显示左右切换箭头，大于 5 页再显示
+            let showPagination = !c.bottomPaginationView.isHidden
+            let bottomBarH: CGFloat = 36
+            let bottomMargin: CGFloat = 16
+            let bottomReserved: CGFloat = showPagination ? (bottomBarH + bottomMargin * 2) : 0
+
+            if showPagination {
+                let barSize = c.bottomPaginationView.preferredSize
+                let barX = (b.width - barSize.width) / 2
+                let barY: CGFloat = bottomMargin
+                c.bottomPaginationView.frame = NSRect(x: barX, y: barY, width: barSize.width, height: barSize.height)
+            }
+
+            let scrollH = max(b.height - 56 - topInset - bottomReserved, 0)
+            c.scrollView.frame = NSRect(x: 0, y: bottomReserved, width: b.width, height: scrollH)
 
             c.selectionTray.isHidden = !c.isSelectionMode
             if c.isSelectionMode {
@@ -134,7 +148,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 let maxTrayH = max(160, scrollH - 32)
                 let trayH = c.selectionTray.preferredHeight(maxHeight: maxTrayH)
                 let trayX = b.width - trayW - 16
-                let trayY = max(16, (scrollH - trayH) / 2)
+                let trayY = max(bottomReserved + 16, (scrollH - trayH) / 2 + bottomReserved)
                 c.selectionTray.frame = NSRect(x: trayX, y: trayY, width: trayW, height: trayH)
             }
 
@@ -187,15 +201,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         root.addSubview(topBar)
         root.addSubview(scrollView)
         root.addSubview(selectionTray)
+        root.addSubview(bottomPaginationView)
         scrollView.documentView = pagesContainer
 
         selectionTray.isHidden = true
         wireTopBar()
         wireSelectionTray()
+        wireBottomPaginationView()
 
         scrollView.onPageChanged = { [weak self] page in
             guard let self else { return }
             self.topBar.setPage(page, of: self.scrollView.pageCount)
+            self.bottomPaginationView.setPage(page, total: self.scrollView.pageCount)
+            self.window?.contentView?.needsLayout = true
         }
         scrollView.onEscape = { [weak self] in
             guard let self else { return }
@@ -289,17 +307,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         topBar.onYellow = { [weak self] in self?.window?.miniaturize(nil) }
         topBar.onGreen = { [weak self] in self?.togglePseudoFullScreen() }
         topBar.onSearchChanged = { [weak self] q in self?.applySearch(q) }
-        topBar.onPrevPage = { [weak self] in
-            guard let self else { return }
-            self.scrollView.scrollToPage(self.scrollView.currentPage - 1, animated: true)
-        }
-        topBar.onNextPage = { [weak self] in
-            guard let self else { return }
-            self.scrollView.scrollToPage(self.scrollView.currentPage + 1, animated: true)
-        }
         topBar.onSettings = { [weak self] in self?.openSettings() }
         topBar.onRefresh = { [weak self] in self?.rescan() }
         topBar.onSearchSubmit = { [weak self] in self?.activateFocusedOrFirstResult() }
+    }
+
+    private func wireBottomPaginationView() {
+        bottomPaginationView.onSelectPage = { [weak self] page in
+            self?.scrollView.scrollToPage(page, animated: true)
+        }
+        bottomPaginationView.onPrevPage = { [weak self] in
+            guard let self else { return }
+            self.scrollView.scrollToPage(self.scrollView.currentPage - 1, animated: true)
+        }
+        bottomPaginationView.onNextPage = { [weak self] in
+            guard let self else { return }
+            self.scrollView.scrollToPage(self.scrollView.currentPage + 1, animated: true)
+        }
     }
 
     private func wireSelectionTray() {
@@ -475,6 +499,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let target = min(max(keepPage ?? scrollView.currentPage, 0), pageCount - 1)
         scrollView.scrollToPage(target, animated: false)
         topBar.setPage(target, of: pageCount)
+        bottomPaginationView.setPage(target, total: pageCount)
+        bottomPaginationView.isHidden = (pageCount <= 1)
+        window?.contentView?.needsLayout = true
         updateEmptyState(pageList: pageList)
     }
 
@@ -555,6 +582,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         layoutPages()
         scrollView.scrollToPage(min(page, scrollView.pageCount - 1), animated: false)
         topBar.setPage(scrollView.currentPage, of: scrollView.pageCount)
+        bottomPaginationView.setPage(scrollView.currentPage, total: scrollView.pageCount)
     }
 
     // MARK: - 动作
@@ -573,7 +601,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let error else { return }
             self?.showToast(L10n.f("无法打开「%@」：%@", info.name, error.localizedDescription))
         }
-        if config.hideOnLaunch || prefersNormalWindowStacking() || isPseudoFullScreen {
+        if config.hideOnLaunch || isPseudoFullScreen {
             hide()
         }
     }
@@ -672,6 +700,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         popover.onRemoveApp = { [weak self] app in
             self?.removeAppFromFolder(app.path, folderID: folder.id)
         }
+        popover.onUninstallApp = { [weak self] app in
+            self?.dismissFolderPopover()
+            self?.confirmUninstall(app: app)
+        }
         popover.onRenameFolder = { [weak self] newName in
             self?.renameFolder(folder, newName: newName)
         }
@@ -753,12 +785,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             exitSelectionMode()
             return
         }
+        // 只有全屏模式下点击空白处才收起隐藏；小界面（窗口化模式）时点击空白处不关闭界面
         if isPseudoFullScreen {
             hide()
-            return
         }
-        guard !prefersNormalWindowStacking() else { return }
-        hide()
     }
 
     // MARK: - 多选与放置
@@ -1296,6 +1326,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 let hide = NSMenuItem(title: L10n.t("从启动台隐藏"), action: #selector(menuHideApp(_:)), keyEquivalent: "")
                 hide.representedObject = info.path
                 menu.addItem(hide)
+
+                menu.addItem(.separator())
+
+                let uninstall = NSMenuItem(title: L10n.t("卸载应用…"), action: #selector(menuUninstallApp(_:)), keyEquivalent: "")
+                uninstall.representedObject = info.path
+                if !isAppUninstallable(info.path) {
+                    uninstall.isEnabled = false
+                    uninstall.toolTip = L10n.t("系统应用不可卸载")
+                }
+                menu.addItem(uninstall)
             case .folder(let folder):
                 let sizeItem = NSMenuItem(title: L10n.t("网格大小"), action: nil, keyEquivalent: "")
                 let sizeSub = NSMenu()
@@ -1372,6 +1412,69 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         reloadData(keepPage: scrollView.currentPage)
         showToast(L10n.f("已隐藏「%@」，可在设置中恢复", (apps.first { $0.path == path }?.name) ?? path))
     }
+
+    private func isAppUninstallable(_ path: String) -> Bool {
+        if path.hasPrefix("/System/") || path.hasPrefix("/System/Applications") {
+            return false
+        }
+        return FileManager.default.isDeletableFile(atPath: path)
+    }
+
+    @objc private func menuUninstallApp(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String,
+              let app = apps.first(where: { $0.path == path }) else { return }
+        confirmUninstall(app: app)
+    }
+
+    func confirmUninstall(app: AppInfo) {
+        guard isAppUninstallable(app.path) else {
+            showToast(L10n.t("系统应用不可卸载"))
+            return
+        }
+        presentPrompt(
+            title: L10n.t("卸载应用"),
+            message: L10n.f("确定要卸载「%@」吗？该应用将被移到废纸篓。", app.name),
+            confirmTitle: L10n.t("移到废纸篓"),
+            showsTextField: false
+        ) { [weak self] _ in
+            self?.performUninstall(app: app)
+        }
+    }
+
+    private func performUninstall(app: AppInfo) {
+        if runningBundleIDs.contains(app.bundleID) {
+            let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.bundleID)
+            running.forEach { $0.terminate() }
+        }
+
+        let url = URL(fileURLWithPath: app.path)
+        do {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            NSLog("Rlaunch: 已卸载应用 %@", app.path)
+        } catch {
+            showToast(L10n.f("卸载失败：%@", error.localizedDescription))
+            return
+        }
+
+        apps.removeAll { $0.path == app.path }
+        for i in 0..<config.folders.count {
+            config.folders[i].appPaths.removeAll { $0 == app.path }
+        }
+        let pageList = PageComposer.removing(["app:\(app.path)"], from: currentPagesItems())
+        savePagesOrder(pageList)
+        compactEmptyPages()
+        ConfigStore.save(config)
+
+        selectedItems.removeAll { $0.identifier == "app:\(app.path)" }
+        selectionTray.setItems(selectedItems)
+        syncPagesSelectionState()
+        if selectedItems.isEmpty && isSelectionMode {
+            exitSelectionMode()
+        }
+
+        reloadData(keepPage: scrollView.currentPage)
+        showToast(L10n.f("已将「%@」移到废纸篓", app.name))
+    }
     @objc private func menuRemoveFromFolder(_ sender: NSMenuItem) {
         if let path = sender.representedObject as? String { removeAppFromFolder(path) }
     }
@@ -1431,7 +1534,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 参与淡入淡出的窗口内容（背景毛玻璃始终不透明，避免采样异常）
-    private var contentViews: [NSView] { [topBar, scrollView, selectionTray] }
+    private var contentViews: [NSView] { [topBar, scrollView, selectionTray, bottomPaginationView] }
 
     private func setContentAlpha(_ alpha: CGFloat,
                                  animated: Bool,
@@ -1482,10 +1585,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.makeFirstResponder(scrollView)
     }
 
-    func showFullScreen() {
+    /// 获取鼠标当前所在的屏幕（分屏多显示器定位）
+    static func screenContainingMouse() -> NSScreen? {
+        let mouseLoc = NSEvent.mouseLocation
+        for screen in NSScreen.screens {
+            if NSMouseInRect(mouseLoc, screen.frame, false) {
+                return screen
+            }
+        }
+        return NSScreen.main ?? NSScreen.screens.first
+    }
+
+    func showFullScreen(on targetScreen: NSScreen? = nil) {
         guard let window else { return }
+        let screen = targetScreen ?? Self.screenContainingMouse() ?? window.screen ?? NSScreen.main
+
         if !isPseudoFullScreen {
-            if let screen = window.screen ?? NSScreen.main {
+            if let screen {
                 frameBeforeFullScreen = window.frame
                 window.setFrame(Self.pseudoFullScreenFrame(for: screen), display: false)
             }
@@ -1501,8 +1617,43 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             window.displayIfNeeded()
             applyGridConfig()
             window.invalidateShadow()
+        } else if let screen, let current = window.screen, current != screen {
+            // 已在全屏状态下，鼠标在另一个屏幕触发：做屏幕切换
+            switchToScreen(screen)
+            return
         }
         show()
+    }
+
+    /// 分屏下切换全屏所在的屏幕（内容淡入淡出，重设窗口尺寸与网格排布）
+    func switchToScreen(_ targetScreen: NSScreen) {
+        guard let window, !isScreenTransitioning else { return }
+        if let current = window.screen, current == targetScreen { return }
+        isScreenTransitioning = true
+
+        setContentAlpha(0, animated: true, duration: 0.08) { [weak self] in
+            guard let self, let window = self.window else {
+                self?.isScreenTransitioning = false
+                return
+            }
+
+            let newFrame = Self.pseudoFullScreenFrame(for: targetScreen)
+            window.setFrame(newFrame, display: false)
+            self.applyWindowLevel()
+
+            window.contentView?.needsLayout = true
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            self.applyGridConfig()
+            window.invalidateShadow()
+
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+
+            self.setContentAlpha(1, animated: true, duration: 0.12) { [weak self] in
+                self?.isScreenTransitioning = false
+            }
+        }
     }
 
     func hide() {
@@ -1577,7 +1728,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 只有背景相关设置真的变了才重建，拖动列间距/图标大小等滑块时保持稳定。
         if previous.backgroundImagePath != config.backgroundImagePath
             || previous.bgOpacity != config.bgOpacity
-            || previous.bgBlur != config.bgBlur {
+            || previous.bgBlur != config.bgBlur
+            || previous.darkBgPreset != config.darkBgPreset
+            || previous.lightBgPreset != config.lightBgPreset
+            || previous.theme != config.theme {
             background.setConfig(config)
         }
         reloadData(keepPage: page)
@@ -1589,6 +1743,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 条目文案是应用名，与语言无关；空状态与右键菜单都是按需构建/渲染，无需整体重刷。
     func applyLanguage() {
         topBar.applyLanguage()
+        bottomPaginationView.applyLanguage()
         if emptyStateView.superview != nil {
             reloadData(keepPage: scrollView.currentPage)
         }
@@ -1637,7 +1792,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func prefersNormalWindowStacking() -> Bool {
         guard let window, let screen = window.screen ?? NSScreen.main else { return false }
         let vf = screen.visibleFrame
-        if vf.height <= 1200 || vf.width <= 1600 { return true }
         let windowArea = window.frame.width * window.frame.height
         let screenArea = max(vf.width * vf.height, 1)
         return windowArea / screenArea >= 0.7
@@ -1652,8 +1806,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let useNormal: Bool = {
             guard let s else { return false }
             let vf = s.visibleFrame
-            if vf.height <= 1200 || vf.width <= 1600 { return true }
-            let windowArea = windowFrame.width * windowFrame.height
+                let windowArea = windowFrame.width * windowFrame.height
             let screenArea = max(vf.width * vf.height, 1)
             return windowArea / screenArea >= 0.7
         }()
@@ -1689,7 +1842,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func otherAppDidActivate(_ note: Notification) {
         guard window?.isVisible == true else { return }
-        guard isPseudoFullScreen || prefersNormalWindowStacking() else { return }
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
         deferToOtherApps()
@@ -1700,27 +1852,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if settingsController?.window?.isVisible == true {
             settingsController?.close()
         }
-        if isPseudoFullScreen || (window.map { w in
-            guard let screen = w.screen ?? NSScreen.main else { return false }
-            let vf = screen.visibleFrame
-            let ratio = (w.frame.width * w.frame.height) / max(vf.width * vf.height, 1)
-            return ratio >= 0.7
-        } ?? false) {
-            hide()
-            return
-        }
-        window?.level = .normal
-        window?.orderBack(nil)
+        // 只有全屏伪全屏模式下，切换到其他应用时才自动收起隐藏；小屏模式下点击桌面空白或切换应用绝不关闭界面
+        guard isPseudoFullScreen else { return }
+        hide()
     }
 
     func windowDidResignKey(_ notification: Notification) {
         guard window?.isVisible == true else { return }
-        guard isPseudoFullScreen || prefersNormalWindowStacking() else { return }
         if shouldSkipDeferOnFocusLoss() { return }
+        // 只有全屏模式下失焦才隐藏；小屏模式下点击外部空白失焦不关闭界面
+        guard isPseudoFullScreen else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window, window.isVisible, !window.isKeyWindow else { return }
-            guard self.isPseudoFullScreen || self.prefersNormalWindowStacking(),
-                  !self.shouldSkipDeferOnFocusLoss() else { return }
+            guard !self.shouldSkipDeferOnFocusLoss() else { return }
             self.deferToOtherApps()
         }
     }

@@ -18,6 +18,7 @@ final class FolderPopoverView: NSView {
 
     var onLaunchApp: ((AppInfo) -> Void)?
     var onRemoveApp: ((AppInfo) -> Void)?
+    var onUninstallApp: ((AppInfo) -> Void)?
     var onRenameFolder: ((String) -> Void)?
     var onDissolveFolder: (() -> Void)?
     var onClose: (() -> Void)?
@@ -284,6 +285,22 @@ final class FolderPopoverView: NSView {
                 mi.target = self
                 mi.representedObject = app
                 menu.addItem(mi)
+
+                let reveal = NSMenuItem(title: L10n.t("在访达中显示"), action: #selector(self?.menuRevealApp(_:)), keyEquivalent: "")
+                reveal.target = self
+                reveal.representedObject = app
+                menu.addItem(reveal)
+
+                menu.addItem(.separator())
+
+                let uninstall = NSMenuItem(title: L10n.t("卸载应用…"), action: #selector(self?.menuUninstallApp(_:)), keyEquivalent: "")
+                uninstall.target = self
+                uninstall.representedObject = app
+                if self?.isAppUninstallable(app.path) == false {
+                    uninstall.isEnabled = false
+                    uninstall.toolTip = L10n.t("系统应用不可卸载")
+                }
+                menu.addItem(uninstall)
                 return menu
             }
             appItemViews.append(view)
@@ -295,6 +312,23 @@ final class FolderPopoverView: NSView {
     @objc private func menuRemoveApp(_ sender: NSMenuItem) {
         guard let app = sender.representedObject as? AppInfo else { return }
         onRemoveApp?(app)
+    }
+
+    @objc private func menuRevealApp(_ sender: NSMenuItem) {
+        guard let app = sender.representedObject as? AppInfo else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: app.path)])
+    }
+
+    @objc private func menuUninstallApp(_ sender: NSMenuItem) {
+        guard let app = sender.representedObject as? AppInfo else { return }
+        onUninstallApp?(app)
+    }
+
+    private func isAppUninstallable(_ path: String) -> Bool {
+        if path.hasPrefix("/System/") || path.hasPrefix("/System/Applications") {
+            return false
+        }
+        return FileManager.default.isDeletableFile(atPath: path)
     }
 
     @objc private func titleEdited() {

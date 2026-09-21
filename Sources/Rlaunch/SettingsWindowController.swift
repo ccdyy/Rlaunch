@@ -138,6 +138,287 @@ final class NumberStepperBox: NSView, NSTextFieldDelegate {
     }
 }
 
+/// 预设颜色单选圆形色块按钮：带外环高光指示、微质感纹理标记与悬停提示
+final class ColorSwatchButton: NSControl {
+    let preset: BackgroundPreset
+    var isSelected: Bool = false {
+        didSet { if oldValue != isSelected { needsDisplay = true } }
+    }
+    var onSelect: ((BackgroundPreset) -> Void)?
+    var onHoverChanged: ((Bool, BackgroundPreset) -> Void)?
+    private var isHovered: Bool = false {
+        didSet {
+            if oldValue != isHovered {
+                needsDisplay = true
+                onHoverChanged?(isHovered, preset)
+            }
+        }
+    }
+
+    init(preset: BackgroundPreset) {
+        self.preset = preset
+        super.init(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
+        toolTip = preset.name
+        translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 22),
+            heightAnchor.constraint(equalToConstant: 22)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard isEnabled else { return }
+        isHovered = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        onSelect?(preset)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+
+        let bounds = self.bounds
+        let color = NSColor(
+            calibratedRed: CGFloat(preset.red),
+            green: CGFloat(preset.green),
+            blue: CGFloat(preset.blue),
+            alpha: 1.0
+        )
+
+        let isDarkPreset = (preset.red + preset.green + preset.blue) / 3.0 < 0.5
+
+        if isSelected {
+            // 选中外环：系统 Accent 强调色
+            ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
+            ctx.setLineWidth(1.8)
+            ctx.strokeEllipse(in: bounds.insetBy(dx: 1.0, dy: 1.0))
+
+            // 内层色块
+            let innerRect = bounds.insetBy(dx: 3.5, dy: 3.5)
+            ctx.setFillColor(color.cgColor)
+            ctx.fillEllipse(in: innerRect)
+
+            // 精细微弱描边
+            ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.16).cgColor)
+            ctx.setLineWidth(0.5)
+            ctx.strokeEllipse(in: innerRect)
+
+            drawTextureBadge(in: innerRect, isDark: isDarkPreset, in: ctx)
+        } else {
+            // 未选中色块
+            let circleRect = bounds.insetBy(dx: isHovered ? 1.5 : 2.5, dy: isHovered ? 1.5 : 2.5)
+            ctx.setFillColor(color.cgColor)
+            ctx.fillEllipse(in: circleRect)
+
+            // 边缘描边
+            let strokeColor = isHovered
+                ? NSColor.secondaryLabelColor.withAlphaComponent(0.65)
+                : NSColor.black.withAlphaComponent(0.18)
+            ctx.setStrokeColor(strokeColor.cgColor)
+            ctx.setLineWidth(isHovered ? 1.0 : 0.6)
+            ctx.strokeEllipse(in: circleRect)
+
+            drawTextureBadge(in: circleRect, isDark: isDarkPreset, in: ctx)
+        }
+    }
+
+    private func drawTextureBadge(in rect: NSRect, isDark: Bool, in ctx: CGContext) {
+        guard preset.texture != .none else { return }
+        let stroke = isDark
+            ? NSColor.white.withAlphaComponent(0.65).cgColor
+            : NSColor.black.withAlphaComponent(0.40).cgColor
+
+        ctx.saveGState()
+        ctx.addEllipse(in: rect)
+        ctx.clip()
+
+        ctx.setStrokeColor(stroke)
+        ctx.setFillColor(stroke)
+
+        switch preset.texture {
+        case .none:
+            break
+        case .twill:
+            // 两条精致的 45° 微斜线
+            ctx.setLineWidth(1.0)
+            let cx = rect.midX
+            let cy = rect.midY
+            ctx.move(to: CGPoint(x: cx - 4, y: cy + 4))
+            ctx.addLine(to: CGPoint(x: cx + 4, y: cy - 4))
+            ctx.move(to: CGPoint(x: cx - 2, y: cy + 6))
+            ctx.addLine(to: CGPoint(x: cx + 6, y: cy - 2))
+            ctx.strokePath()
+        case .noise:
+            // 4 个精致微粒小点
+            let cx = rect.midX
+            let cy = rect.midY
+            let r: CGFloat = 0.8
+            ctx.fillEllipse(in: CGRect(x: cx - 3, y: cy + 2, width: r, height: r))
+            ctx.fillEllipse(in: CGRect(x: cx + 2, y: cy + 3, width: r, height: r))
+            ctx.fillEllipse(in: CGRect(x: cx - 1, y: cy - 2, width: r, height: r))
+            ctx.fillEllipse(in: CGRect(x: cx + 3, y: cy - 3, width: r, height: r))
+        case .dotGrid:
+            // 2×2 精密微点阵
+            let cx = rect.midX
+            let cy = rect.midY
+            let r: CGFloat = 1.0
+            ctx.fillEllipse(in: CGRect(x: cx - 3, y: cy + 2, width: r, height: r))
+            ctx.fillEllipse(in: CGRect(x: cx + 2, y: cy + 2, width: r, height: r))
+            ctx.fillEllipse(in: CGRect(x: cx - 3, y: cy - 3, width: r, height: r))
+            ctx.fillEllipse(in: CGRect(x: cx + 2, y: cy - 3, width: r, height: r))
+        case .grid:
+            // 极细微十字方格
+            ctx.setLineWidth(0.8)
+            let cx = rect.midX
+            let cy = rect.midY
+            ctx.move(to: CGPoint(x: cx - 4, y: cy))
+            ctx.addLine(to: CGPoint(x: cx + 4, y: cy))
+            ctx.move(to: CGPoint(x: cx, y: cy - 4))
+            ctx.addLine(to: CGPoint(x: cx, y: cy + 4))
+            ctx.strokePath()
+        case .brushed:
+            // 水平微拉丝
+            ctx.setLineWidth(0.8)
+            let cx = rect.midX
+            let cy = rect.midY
+            ctx.move(to: CGPoint(x: cx - 4, y: cy + 2))
+            ctx.addLine(to: CGPoint(x: cx + 4, y: cy + 2))
+            ctx.move(to: CGPoint(x: cx - 4, y: cy - 2))
+            ctx.addLine(to: CGPoint(x: cx + 4, y: cy - 2))
+            ctx.strokePath()
+        }
+
+        ctx.restoreGState()
+    }
+}
+
+/// 预设颜色调色板组件：色块排布与名称/纹理标签
+final class PresetPaletteView: NSView {
+    private let presets: [BackgroundPreset]
+    private var swatchButtons: [ColorSwatchButton] = []
+    private let nameLabel = NSTextField(labelWithString: "")
+    var selectedId: String {
+        didSet { updateSelection() }
+    }
+    var onSelect: ((String) -> Void)?
+
+    init(presets: [BackgroundPreset], selectedId: String) {
+        self.presets = presets
+        self.selectedId = selectedId
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        let rootStack = NSStackView()
+        rootStack.orientation = .vertical
+        rootStack.spacing = 5
+        rootStack.alignment = .leading
+        rootStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let buttonRow = NSStackView()
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 5
+        buttonRow.alignment = .centerY
+
+        for preset in presets {
+            let btn = ColorSwatchButton(preset: preset)
+            btn.isSelected = (preset.id == selectedId)
+            btn.onSelect = { [weak self] p in
+                self?.selectedId = p.id
+                self?.onSelect?(p.id)
+            }
+            btn.onHoverChanged = { [weak self] isHovered, p in
+                self?.handleHover(isHovered: isHovered, preset: p)
+            }
+            swatchButtons.append(btn)
+            buttonRow.addArrangedSubview(btn)
+        }
+        rootStack.addArrangedSubview(buttonRow)
+
+        nameLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        nameLabel.textColor = .secondaryLabelColor
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        rootStack.addArrangedSubview(nameLabel)
+
+        addSubview(rootStack)
+        NSLayoutConstraint.activate([
+            rootStack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            rootStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            rootStack.topAnchor.constraint(equalTo: topAnchor),
+            rootStack.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+
+        updateSelection()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func setEnabled(_ enabled: Bool) {
+        alphaValue = enabled ? 1.0 : 0.45
+        for btn in swatchButtons {
+            btn.isEnabled = enabled
+        }
+    }
+
+    private func handleHover(isHovered: Bool, preset: BackgroundPreset) {
+        if isHovered {
+            nameLabel.stringValue = displayName(for: preset)
+        } else {
+            updateSelection()
+        }
+    }
+
+    private func updateSelection() {
+        for btn in swatchButtons {
+            btn.isSelected = (btn.preset.id == selectedId)
+        }
+        if let current = presets.first(where: { $0.id == selectedId }) {
+            nameLabel.stringValue = displayName(for: current)
+        }
+    }
+
+    private func displayName(for preset: BackgroundPreset) -> String {
+        let baseName = L10n.t(preset.name)
+        if preset.texture != .none {
+            return "\(baseName)  ·  \(textureDescription(preset.texture))"
+        }
+        return baseName
+    }
+
+    private func textureDescription(_ texture: BackgroundTexture) -> String {
+        switch texture {
+        case .none: return ""
+        case .twill: return L10n.t("微斜纹")
+        case .noise: return L10n.t("微粒磨砂")
+        case .dotGrid: return L10n.t("微点阵")
+        case .grid: return L10n.t("微方格")
+        case .brushed: return L10n.t("微拉丝")
+        }
+    }
+
+    func retranslate() {
+        for btn in swatchButtons {
+            btn.toolTip = L10n.t(btn.preset.name)
+        }
+        updateSelection()
+    }
+}
+
 fileprivate func makeStepper(value: Double, min: Double, max: Double) -> NSStepper {
     let s = NSStepper()
     s.minValue = min
@@ -165,6 +446,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // 外观
     private let themeControl = NSSegmentedControl(
         labels: [L10n.t("明亮"), L10n.t("深黑"), L10n.t("跟随系统")], trackingMode: .selectOne, target: nil, action: nil)
+    private var darkPaletteView: PresetPaletteView!
+    private var lightPaletteView: PresetPaletteView!
+    private var darkPaletteRow: NSStackView?
+    private var lightPaletteRow: NSStackView?
     private let bgPathLabel = NSTextField(labelWithString: L10n.t("默认（系统毛玻璃）"))
     private let chooseBgButton = NSButton(title: L10n.t("选择图片…"), target: nil, action: nil)
     private let clearBgButton = NSButton(title: L10n.t("清除"), target: nil, action: nil)
@@ -437,9 +722,32 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             self?.controlChanged(self?.depthStepper)
         }
 
+        darkPaletteView = PresetPaletteView(
+            presets: BackgroundPresets.darkPresets,
+            selectedId: config.darkBgPreset
+        )
+        darkPaletteView.onSelect = { [weak self] id in
+            self?.config.darkBgPreset = id
+            self?.refreshValues(heavy: false)
+            self?.scheduleSave()
+        }
+
+        lightPaletteView = PresetPaletteView(
+            presets: BackgroundPresets.lightPresets,
+            selectedId: config.lightBgPreset
+        )
+        lightPaletteView.onSelect = { [weak self] id in
+            self?.config.lightBgPreset = id
+            self?.refreshValues(heavy: false)
+            self?.scheduleSave()
+        }
+
         buildTabsAndPages()
         refreshValues()
         layoutContent()
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(themeDidChangeNotification), name: .themeDidChange, object: nil)
 
         // 监听 Esc 键关闭
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -458,6 +766,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let recordMonitor { NSEvent.removeMonitor(recordMonitor) }
     }
@@ -510,6 +819,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func buildAppearancePage(_ stack: NSStackView) {
         stack.addArrangedSubview(makeSectionHeader(L10n.t("界面样式"), isFirst: true))
         stack.addArrangedSubview(formRow(label: L10n.t("主题模式"), control: themeControl))
+
+        let darkRow = formRow(label: L10n.t("背景颜色"), control: darkPaletteView)
+        let lightRow = formRow(label: L10n.t("背景颜色"), control: lightPaletteView)
+        darkPaletteRow = darkRow
+        lightPaletteRow = lightRow
+        stack.addArrangedSubview(darkRow)
+        stack.addArrangedSubview(lightRow)
 
         // 背景图控件组
         bgPathLabel.lineBreakMode = .byTruncatingMiddle
@@ -877,6 +1193,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         themeControl.selectedSegment = config.theme == .light ? 0 : (config.theme == .dark ? 1 : 2)
         languageControl.selectedSegment = AppLanguage.allCases.firstIndex(of: config.language) ?? 0
 
+        darkPaletteView.selectedId = config.darkBgPreset
+        lightPaletteView.selectedId = config.lightBgPreset
+        let hasCustomImage = config.backgroundImagePath != nil && !config.backgroundImagePath!.isEmpty
+        darkPaletteView.setEnabled(!hasCustomImage)
+        lightPaletteView.setEnabled(!hasCustomImage)
+
         // 背景图与模糊联动
         if let path = config.backgroundImagePath, !path.isEmpty {
             bgPathLabel.stringValue = (path as NSString).lastPathComponent
@@ -931,6 +1253,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         pinchValue.stringValue = String(format: "%.2f", config.pinchThreshold)
         pinchSlider.isEnabled = config.pinchEnabled
         pinchValue.textColor = config.pinchEnabled ? .secondaryLabelColor : .tertiaryLabelColor
+
+        updatePaletteVisibility()
+    }
+
+    @objc private func themeDidChangeNotification() {
+        updatePaletteVisibility()
+        layoutContent()
+    }
+
+    private func updatePaletteVisibility() {
+        let isEffectiveDark: Bool = {
+            switch config.theme {
+            case .dark: return true
+            case .light: return false
+            case .system:
+                return (window?.effectiveAppearance ?? NSApp.effectiveAppearance)
+                    .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            }
+        }()
+        darkPaletteRow?.isHidden = !isEffectiveDark
+        lightPaletteRow?.isHidden = isEffectiveDark
     }
 
     /// 与系统登录项状态同步（以系统状态为准）
@@ -1126,6 +1469,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
 
         refreshValues(heavy: false)
+        updatePaletteVisibility()
+        layoutContent()
         scheduleSave()
     }
 
@@ -1277,6 +1622,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // 含格式参数的文案无法反查，单独刷新
         rendererHintLabel?.stringValue = Self.rendererHintText
         githubLinkButton.toolTip = L10n.f("在浏览器中打开 %@", AppVersion.repositoryURL)
+        darkPaletteView?.retranslate()
+        lightPaletteView?.retranslate()
         layoutContent()
     }
 
@@ -1417,6 +1764,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         config.backgroundImagePath = defaults.backgroundImagePath
         config.bgOpacity = defaults.bgOpacity
         config.bgBlur = defaults.bgBlur
+        config.darkBgPreset = defaults.darkBgPreset
+        config.lightBgPreset = defaults.lightBgPreset
         config.columns = defaults.columns
         config.rows = defaults.rows
         config.columnSpacing = defaults.columnSpacing

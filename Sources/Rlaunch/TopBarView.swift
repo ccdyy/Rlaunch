@@ -159,12 +159,72 @@ private extension NSImage {
     }
 }
 
-// MARK: - 搜索框（修复放大镜图标被拉伸：固定搜索按钮尺寸、等比例符号图）
+// MARK: - 搜索框（等比正圆放大镜、完美明暗自适应、文本居中对齐）
 
 final class SearchField: NSSearchField {
     override class var cellClass: AnyClass? {
         get { SearchFieldCell.self }
         set { }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func configure() {
+        font = .systemFont(ofSize: 13)
+        textColor = .labelColor
+        isBordered = false
+        drawsBackground = false
+        focusRingType = .none
+        sendsSearchStringImmediately = true
+        applyPlaceholder()
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
+    }
+
+    @objc private func themeDidChange() {
+        updateThemeAppearance()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateThemeAppearance()
+    }
+
+    func updateThemeAppearance() {
+        textColor = .labelColor
+        applyPlaceholder()
+        needsDisplay = true
+    }
+
+    func applyPlaceholder() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let placeholderColor = isDark
+            ? NSColor.white.withAlphaComponent(0.48)
+            : NSColor.black.withAlphaComponent(0.45)
+
+        let pStyle = NSMutableParagraphStyle()
+        pStyle.alignment = .left
+        placeholderAttributedString = NSAttributedString(
+            string: L10n.t("搜索应用…"),
+            attributes: [
+                .font: font ?? NSFont.systemFont(ofSize: 13),
+                .foregroundColor: placeholderColor,
+                .paragraphStyle: pStyle
+            ]
+        )
     }
 }
 
@@ -180,7 +240,7 @@ final class SearchFieldCell: NSSearchFieldCell {
     }
 
     private func configure() {
-        // 去掉系统默认放大镜（其图像会随控件高度拉伸），由 drawInterior 自绘
+        // 去掉系统默认拉伸放大镜，由 drawInterior 等比自绘
         if let button = searchButtonCell {
             button.image = nil
             button.isTransparent = true
@@ -190,44 +250,186 @@ final class SearchFieldCell: NSSearchFieldCell {
 
     override func searchButtonRect(forBounds rect: NSRect) -> NSRect {
         var r = super.searchButtonRect(forBounds: rect)
-        r.size = NSSize(width: 18, height: 18)
-        r.origin.y = rect.midY - 9
+        r.size = NSSize(width: 16, height: 16)
+        r.origin.x = rect.minX + 8
+        r.origin.y = round(rect.midY - 8)
         return r
+    }
+
+    override func cancelButtonRect(forBounds rect: NSRect) -> NSRect {
+        var r = super.cancelButtonRect(forBounds: rect)
+        r.origin.y = round(rect.midY - r.height / 2)
+        return r
+    }
+
+    private func adjustedTextRect(forBounds rect: NSRect) -> NSRect {
+        let btnRect = searchButtonRect(forBounds: rect)
+        let cancelRect = cancelButtonRect(forBounds: rect)
+        let left = btnRect.maxX + 8
+        let right = cancelRect.width > 0 ? (cancelRect.minX - 4) : (rect.maxX - 8)
+        let width = max(0, right - left)
+
+        let font = self.font ?? NSFont.systemFont(ofSize: 13)
+        let textHeight = ceil(font.ascender - font.descender + 2)
+        let y = round(rect.midY - textHeight / 2)
+        return NSRect(x: left, y: y, width: width, height: textHeight)
+    }
+
+    override func searchTextRect(forBounds rect: NSRect) -> NSRect {
+        return adjustedTextRect(forBounds: rect)
+    }
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        return adjustedTextRect(forBounds: rect)
+    }
+
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: adjustedTextRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: adjustedTextRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, start: selStart, length: selLength)
     }
 
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
         super.drawInterior(withFrame: cellFrame, in: controlView)
-        // 自绘放大镜：固定 15pt 符号图、等比、不可拉伸
-        guard let image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: L10n.t("搜索"))?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)) else { return }
-        let rect = searchButtonRect(forBounds: cellFrame).insetBy(dx: 1, dy: 1)
-        NSColor.secondaryLabelColor.set()
-        image.draw(in: rect)
+
+        // 明亮与深色模式精准色彩对比
+        let isDark = controlView.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let tintColor = isDark
+            ? NSColor.white.withAlphaComponent(0.68)
+            : NSColor.black.withAlphaComponent(0.55)
+
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+            .applying(.init(paletteColors: [tintColor]))
+
+        guard let symbol = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: L10n.t("搜索"))?
+            .withSymbolConfiguration(config) else { return }
+
+        let btnRect = searchButtonRect(forBounds: cellFrame)
+        let symSize = symbol.size
+        guard symSize.width > 0, symSize.height > 0 else { return }
+
+        // 等比缩放居中于 14×14 区域，使用原生 draw 保持朝向完全正确
+        let targetSide: CGFloat = 13.5
+        let scale = min(targetSide / symSize.width, targetSide / symSize.height)
+        let drawW = round(symSize.width * scale)
+        let drawH = round(symSize.height * scale)
+        let drawRect = NSRect(
+            x: round(btnRect.midX - drawW / 2),
+            y: round(btnRect.midY - drawH / 2),
+            width: drawW,
+            height: drawH
+        )
+
+        symbol.draw(in: drawRect)
     }
 }
 
-// MARK: - 页码标签（点击左右翻页）
+// MARK: - 液态玻璃搜索框容器（明暗自适应高光边框、系统毛玻璃/Liquid Glass、柔和阴影、胶囊圆角）
 
-final class PageLabel: NSTextField {
-    var onPrev: (() -> Void)?
-    var onNext: (() -> Void)?
+final class GlassSearchContainerView: NSView {
+    let searchField: SearchField
+    private let glassContainer: NSView
+    private let tintLayer = NSView()
+    private let contentHost: NSView
 
-    init() {
+    var isFocused: Bool = false {
+        didSet { updateAppearance() }
+    }
+
+    private var isDarkMode: Bool {
+        effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    init(searchField: SearchField) {
+        self.searchField = searchField
+        let (glass, host) = SystemGlass.makeContainer(cornerRadius: 17, material: .hudWindow)
+        self.glassContainer = glass
+        self.contentHost = host
         super.init(frame: .zero)
-        isEditable = false
-        isSelectable = false
-        isBordered = false
-        drawsBackground = false
-        font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
-        textColor = .labelColor
-        alignment = .center
+
+        wantsLayer = true
+        layer?.masksToBounds = false
+
+        glassContainer.wantsLayer = true
+        glassContainer.layer?.masksToBounds = true
+        glassContainer.layer?.cornerRadius = 17
+
+        tintLayer.wantsLayer = true
+        tintLayer.layer?.masksToBounds = true
+        tintLayer.layer?.cornerRadius = 17
+
+        addSubview(glassContainer)
+        addSubview(tintLayer)
+        addSubview(contentHost)
+        contentHost.addSubview(searchField)
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
+        updateAppearance()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        if p.x < bounds.width / 2 { onPrev?() } else { onNext?() }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func themeDidChange() {
+        updateAppearance()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
+
+    func updateAppearance() {
+        let dark = isDarkMode
+        if dark {
+            glassContainer.layer?.borderColor = isFocused
+                ? NSColor.white.withAlphaComponent(0.60).cgColor
+                : NSColor.white.withAlphaComponent(0.24).cgColor
+            glassContainer.layer?.borderWidth = isFocused ? 1.0 : 0.5
+            tintLayer.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.20).cgColor
+
+            shadow = NSShadow()
+            shadow?.shadowColor = NSColor.black.withAlphaComponent(0.30)
+            shadow?.shadowOffset = NSSize(width: 0, height: -2)
+            shadow?.shadowBlurRadius = 8
+        } else {
+            // 明亮模式：清晰微黑描边 + 纯净浅色磨砂底，避免在白色或复杂壁纸上隐形
+            glassContainer.layer?.borderColor = isFocused
+                ? NSColor.black.withAlphaComponent(0.40).cgColor
+                : NSColor.black.withAlphaComponent(0.16).cgColor
+            glassContainer.layer?.borderWidth = isFocused ? 1.0 : 0.5
+            tintLayer.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.65).cgColor
+
+            shadow = NSShadow()
+            shadow?.shadowColor = NSColor.black.withAlphaComponent(0.10)
+            shadow?.shadowOffset = NSSize(width: 0, height: -2)
+            shadow?.shadowBlurRadius = 8
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        glassContainer.frame = bounds
+        tintLayer.frame = bounds
+        contentHost.frame = bounds
+
+        let fieldH: CGFloat = 28
+        let fieldY = round((bounds.height - fieldH) / 2)
+        searchField.frame = NSRect(
+            x: 4,
+            y: fieldY,
+            width: max(0, bounds.width - 8),
+            height: fieldH
+        )
     }
 }
 
@@ -269,7 +471,7 @@ final class SymbolButton: NSButton {
     }
 }
 
-// MARK: - 顶栏（三色按钮 | 搜索 | 页码 刷新 全屏 设置）
+// MARK: - 顶栏（三色按钮 | 居中液态玻璃搜索栏 | 刷新 全屏 设置）
 
 final class TopBarView: NSView, NSSearchFieldDelegate {
     var onRed: (() -> Void)?
@@ -285,7 +487,7 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
 
     let traffic = TrafficLightsView()
     let searchField = SearchField()
-    let pageLabel = PageLabel()
+    private(set) var searchContainer: GlassSearchContainerView!
     let refreshButton = SymbolButton(symbol: "arrow.clockwise")
     let fullscreenButton = SymbolButton(symbol: "arrow.up.left.and.arrow.down.right")
     let settingsButton = SymbolButton(symbol: "gearshape")
@@ -293,10 +495,7 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
 
-        searchField.placeholderString = L10n.t("搜索应用…")
-        searchField.font = .systemFont(ofSize: 13)
-        searchField.controlSize = .large
-        searchField.sendsSearchStringImmediately = true
+        searchField.applyPlaceholder()
         searchField.setAccessibilityLabel(L10n.t("搜索应用"))
         searchField.delegate = self
         searchField.target = self
@@ -305,14 +504,9 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(textDidChange(_:)),
             name: NSControl.textDidChangeNotification, object: searchField)
-        searchField.wantsLayer = true
-        searchField.layer?.cornerRadius = 9
-        addSubview(searchField)
 
-        pageLabel.stringValue = "1 / 1"
-        pageLabel.onPrev = { [weak self] in self?.onPrevPage?() }
-        pageLabel.onNext = { [weak self] in self?.onNextPage?() }
-        addSubview(pageLabel)
+        searchContainer = GlassSearchContainerView(searchField: searchField)
+        addSubview(searchContainer)
 
         fullscreenButton.toolTip = L10n.t("全屏 / 退出全屏")
         fullscreenButton.target = self
@@ -359,6 +553,14 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
         onSearchChanged?(query)
     }
 
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        searchContainer?.isFocused = true
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        searchContainer?.isFocused = false
+    }
+
     /// 回车提交搜索（`sendsSearchStringImmediately` 下 action 无法区分回车与输入，故用命令拦截）
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
@@ -373,18 +575,17 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
     @objc private func refreshClicked() { onRefresh?() }
 
     func setPage(_ page: Int, of total: Int) {
-        pageLabel.stringValue = "\(page + 1) / \(max(total, 1))"
+        // 页码指示已迁移至底部分页条，保留兼容接口
     }
 
     /// 应用（或切换）界面语言：刷新占位符、提示与辅助功能标签
     func applyLanguage() {
-        searchField.placeholderString = L10n.t("搜索应用…")
+        searchField.applyPlaceholder()
         searchField.setAccessibilityLabel(L10n.t("搜索应用"))
         fullscreenButton.toolTip = L10n.t("全屏 / 退出全屏")
         refreshButton.toolTip = L10n.t("重新扫描应用")
         settingsButton.toolTip = L10n.t("设置")
         traffic.applyLanguage()
-        pageLabel.setAccessibilityLabel(L10n.t("设置"))
         needsLayout = true
     }
 
@@ -451,7 +652,7 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
 
         traffic.frame = NSRect(x: sideInset, y: 0, width: 62, height: h)
 
-        // 右侧图标与页码从右边缘依次向左排布，避免窄窗口下与搜索框重叠
+        // 右侧操作图标从右边缘依次向左排布（已移除顶部右侧分页）
         var rightX = bounds.width - sideInset
         let buttonY = (h - 30) / 2
         settingsButton.frame = NSRect(x: rightX - buttonSize, y: buttonY, width: buttonSize, height: 30)
@@ -461,17 +662,15 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
         refreshButton.frame = NSRect(x: rightX - buttonSize, y: buttonY, width: buttonSize, height: 30)
         rightX -= buttonSize + gap
 
-        pageLabel.sizeToFit()
-        let pageW = max(pageLabel.frame.width, 44)
-        pageLabel.frame = NSRect(x: rightX - pageW, y: (h - pageLabel.frame.height) / 2,
-                                 width: pageW, height: pageLabel.frame.height)
-        rightX -= pageW
+        // 搜索栏正居中：中心严格对齐 bounds.width / 2，不受左右侧按钮数量或宽度不对称的影响
+        let leftOccupied = traffic.frame.maxX + 16
+        let rightOccupied = bounds.width - rightX + 16
+        let maxSideOccupied = max(leftOccupied, rightOccupied)
 
-        // 搜索框在「三色按钮」与「页码」之间的可用区间内居中，并留出至少 12pt 间距
-        let minX = traffic.frame.maxX + 16
-        let available = max(120, rightX - 12 - minX)
-        let searchWidth = min(460, available)
-        let searchX = minX + (available - searchWidth) / 2
-        searchField.frame = NSRect(x: searchX, y: (h - 30) / 2, width: searchWidth, height: 30)
+        let maxAllowedWidth = max(140, bounds.width - 2 * maxSideOccupied)
+        let searchWidth = min(400, maxAllowedWidth)
+        let searchX = (bounds.width - searchWidth) / 2
+        let searchH: CGFloat = 34
+        searchContainer.frame = NSRect(x: searchX, y: (h - searchH) / 2, width: searchWidth, height: searchH)
     }
 }

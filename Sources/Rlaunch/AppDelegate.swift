@@ -29,16 +29,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onQuit: { NSApp.terminate(nil) }
         )
 
-        // 全局快捷键：切换显示/隐藏；四指/五指捏合：隐藏时打开并全屏，显示时收起
+        // 全局快捷键：切换显示/隐藏；四指/五指捏合与张开手势
         hotKey = HotKeyMonitor()
         hotKey.onTrigger = { [weak self] in self?.mainController.toggle() }
         pinch = PinchMonitor()
-        pinch.onTrigger = { [weak self] in
+        pinch.onGestureAction = { [weak self] action in
             guard let self else { return }
-            if self.mainController.isFrontmost {
-                self.mainController.hide()
-            } else {
-                self.mainController.showFullScreen()
+            let mouseScreen = MainWindowController.screenContainingMouse()
+            switch action {
+            case .pinchIn:
+                // 四指/五指捏合：唤起全屏，或在分屏多显示器下根据鼠标所在屏幕做屏幕切换
+                if self.mainController.isVisible {
+                    if let target = mouseScreen,
+                       let current = self.mainController.window?.screen,
+                       target != current {
+                        // 鼠标在另一显示器屏幕捏合：平滑切换到该屏幕显示
+                        self.mainController.switchToScreen(target)
+                    } else {
+                        // 鼠标在当前全屏所在的屏幕捏合：收起隐藏
+                        self.mainController.hide()
+                    }
+                } else {
+                    // 隐藏状态下：在鼠标当前所在的屏幕全屏打开
+                    self.mainController.showFullScreen(on: mouseScreen)
+                }
+
+            case .pinchOut:
+                // 四指/五指张开：支持张开关闭
+                if self.mainController.isVisible {
+                    self.mainController.hide()
+                }
             }
         }
         applyMonitors(config: config)
