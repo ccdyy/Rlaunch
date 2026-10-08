@@ -1,21 +1,6 @@
 import Cocoa
 import RlaunchCore
 
-/// 网格布局参数
-struct GridLayoutConfig: Equatable {
-    var columns: Int = 7
-    var rows: Int = 5
-    var columnSpacing: CGFloat = 24
-    var rowSpacing: CGFloat = 24
-    var iconSize: CGFloat = 64
-
-    static let defaults = GridLayoutConfig()
-
-    var labelHeight: CGFloat { min(40, max(26, iconSize * 0.28)) }
-    var cellWidth: CGFloat { iconSize + 20 }
-    var cellHeight: CGFloat { iconSize + labelHeight + 16 }
-}
-
 /// 一页网格：按 columns×rows 居中排布应用/文件夹；支持跨单元格大文件夹、长按多选、空白处点击返回、右键菜单。
 final class GridPageView: NSView {
 
@@ -66,6 +51,7 @@ final class GridPageView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        clipsToBounds = true
         registerForDraggedTypes([.rlaunchReorderItems, .rlaunchAppPath, .rlaunchFolderID])
 
         insertionIndicator.wantsLayer = true
@@ -183,7 +169,8 @@ final class GridPageView: NSView {
         let gridW = CGFloat(cols) * cellW + CGFloat(cols - 1) * colSpacing
         let gridH = CGFloat(rows) * cellH + CGFloat(rows - 1) * rowSpacing
         let x0 = (W - gridW) / 2
-        let y0 = (H - gridH) / 2
+        // 居中且不得越出可视区：容量由窗口尺寸推算，正常不会溢出；这里兜底防止被顶栏压住
+        let y0 = max(0, (H - gridH) / 2)
 
         // 与分页逻辑共用同一份装箱算法，确保「分页认为放得下」的条目这里一定有位置
         let placements = GridPacker.placements(for: items, columns: cols, rows: rows)

@@ -206,6 +206,7 @@ final class BottomPaginationView: NSView {
 
     private let glassContainer: NSView
     private let tintLayer = NSView()
+    private var edgeStroke: EdgeStrokeView?
     private let contentHost: NSView
     private let prevButton = PaginationArrowButton(symbolName: "chevron.left", accessibilityLabel: L10n.t("上一页"))
     private let nextButton = PaginationArrowButton(symbolName: "chevron.right", accessibilityLabel: L10n.t("下一页"))
@@ -239,6 +240,8 @@ final class BottomPaginationView: NSView {
         addSubview(glassContainer)
         addSubview(tintLayer)
         addSubview(contentHost)
+        // 轮廓由系统玻璃视图裁剪 → 圆形描边贴合；写在 glassContainer.layer 上的 border 会被上层盖住
+        edgeStroke = EdgeStrokeView.install(on: self, cornerRadius: 18, width: 0.5, continuous: false)
 
         prevButton.target = self
         prevButton.action = #selector(prevClicked)
@@ -273,8 +276,7 @@ final class BottomPaginationView: NSView {
     private func updateAppearance() {
         let dark = isDarkMode
         if dark {
-            glassContainer.layer?.borderColor = NSColor.white.withAlphaComponent(0.24).cgColor
-            glassContainer.layer?.borderWidth = 0.5
+            edgeStroke?.update(color: NSColor.white.withAlphaComponent(0.24))
             tintLayer.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.20).cgColor
 
             shadow = NSShadow()
@@ -282,8 +284,7 @@ final class BottomPaginationView: NSView {
             shadow?.shadowOffset = NSSize(width: 0, height: -2)
             shadow?.shadowBlurRadius = 8
         } else {
-            glassContainer.layer?.borderColor = NSColor.black.withAlphaComponent(0.16).cgColor
-            glassContainer.layer?.borderWidth = 0.5
+            edgeStroke?.update(color: NSColor.black.withAlphaComponent(0.16))
             tintLayer.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.65).cgColor
 
             shadow = NSShadow()

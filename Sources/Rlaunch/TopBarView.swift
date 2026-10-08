@@ -333,6 +333,8 @@ final class GlassSearchContainerView: NSView {
     private let glassContainer: NSView
     private let tintLayer = NSView()
     private let contentHost: NSView
+    /// 最上层描边（glassContainer 上的 border 会被 tint/content 子层盖住）
+    private var edgeStroke: EdgeStrokeView?
 
     var isFocused: Bool = false {
         didSet { updateAppearance() }
@@ -367,6 +369,7 @@ final class GlassSearchContainerView: NSView {
         addSubview(tintLayer)
         addSubview(contentHost)
         contentHost.addSubview(searchField)
+        edgeStroke = EdgeStrokeView.install(on: self, cornerRadius: 17, width: 0.5, continuous: false)
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
@@ -391,10 +394,10 @@ final class GlassSearchContainerView: NSView {
     func updateAppearance() {
         let dark = isDarkMode
         if dark {
-            glassContainer.layer?.borderColor = isFocused
-                ? NSColor.white.withAlphaComponent(0.60).cgColor
-                : NSColor.white.withAlphaComponent(0.24).cgColor
-            glassContainer.layer?.borderWidth = isFocused ? 1.0 : 0.5
+            // 轮廓由系统玻璃视图裁剪（圆形圆角）→ 描边同样用圆形并贴在其边缘
+            edgeStroke?.update(color: isFocused
+                ? NSColor.white.withAlphaComponent(0.60)
+                : NSColor.white.withAlphaComponent(0.24))
             tintLayer.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.20).cgColor
 
             shadow = NSShadow()
@@ -403,10 +406,9 @@ final class GlassSearchContainerView: NSView {
             shadow?.shadowBlurRadius = 8
         } else {
             // 明亮模式：清晰微黑描边 + 纯净浅色磨砂底，避免在白色或复杂壁纸上隐形
-            glassContainer.layer?.borderColor = isFocused
-                ? NSColor.black.withAlphaComponent(0.40).cgColor
-                : NSColor.black.withAlphaComponent(0.16).cgColor
-            glassContainer.layer?.borderWidth = isFocused ? 1.0 : 0.5
+            edgeStroke?.update(color: isFocused
+                ? NSColor.black.withAlphaComponent(0.40)
+                : NSColor.black.withAlphaComponent(0.16))
             tintLayer.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.65).cgColor
 
             shadow = NSShadow()
@@ -421,6 +423,7 @@ final class GlassSearchContainerView: NSView {
         glassContainer.frame = bounds
         tintLayer.frame = bounds
         contentHost.frame = bounds
+        edgeStroke?.frame = bounds
 
         let fieldH: CGFloat = 28
         let fieldY = round((bounds.height - fieldH) / 2)
@@ -483,12 +486,10 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
     var onPrevPage: (() -> Void)?
     var onNextPage: (() -> Void)?
     var onSettings: (() -> Void)?
-    var onRefresh: (() -> Void)?
 
     let traffic = TrafficLightsView()
     let searchField = SearchField()
     private(set) var searchContainer: GlassSearchContainerView!
-    let refreshButton = SymbolButton(symbol: "arrow.clockwise")
     let fullscreenButton = SymbolButton(symbol: "arrow.up.left.and.arrow.down.right")
     let settingsButton = SymbolButton(symbol: "gearshape")
 
@@ -512,11 +513,6 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
         fullscreenButton.target = self
         fullscreenButton.action = #selector(greenClicked)
         addSubview(fullscreenButton)
-
-        refreshButton.toolTip = L10n.t("重新扫描应用")
-        refreshButton.target = self
-        refreshButton.action = #selector(refreshClicked)
-        addSubview(refreshButton)
 
         settingsButton.toolTip = L10n.t("设置")
         settingsButton.target = self
@@ -572,7 +568,6 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
 
     @objc private func greenClicked() { onGreen?() }
     @objc private func settingsClicked() { onSettings?() }
-    @objc private func refreshClicked() { onRefresh?() }
 
     func setPage(_ page: Int, of total: Int) {
         // 页码指示已迁移至底部分页条，保留兼容接口
@@ -583,7 +578,6 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
         searchField.applyPlaceholder()
         searchField.setAccessibilityLabel(L10n.t("搜索应用"))
         fullscreenButton.toolTip = L10n.t("全屏 / 退出全屏")
-        refreshButton.toolTip = L10n.t("重新扫描应用")
         settingsButton.toolTip = L10n.t("设置")
         traffic.applyLanguage()
         needsLayout = true
@@ -658,8 +652,6 @@ final class TopBarView: NSView, NSSearchFieldDelegate {
         settingsButton.frame = NSRect(x: rightX - buttonSize, y: buttonY, width: buttonSize, height: 30)
         rightX -= buttonSize + gap
         fullscreenButton.frame = NSRect(x: rightX - buttonSize, y: buttonY, width: buttonSize, height: 30)
-        rightX -= buttonSize + gap
-        refreshButton.frame = NSRect(x: rightX - buttonSize, y: buttonY, width: buttonSize, height: 30)
         rightX -= buttonSize + gap
 
         // 搜索栏正居中：中心严格对齐 bounds.width / 2，不受左右侧按钮数量或宽度不对称的影响

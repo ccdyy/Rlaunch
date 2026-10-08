@@ -14,6 +14,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var searchQuery = ""
     private var pages: [GridPageView] = []
     private var lastLayoutSize: NSSize = .zero
+    private var lastGridLayoutConfig: GridLayoutConfig?
+    /// 当前网格实际容量：窗口缩小时会小于 config.columns/rows，分页与布局都必须用它
+    private var gridCapacity = GridCapacity(columns: 7, rows: 5)
+    /// 容量变化导致的分页重排（合并到下一次 runloop，避免拖动窗口时反复重建视图）
+    private var needsRepaginate = false
+    private var gridColumns: Int { max(gridCapacity.columns, 1) }
+    private var gridRows: Int { max(gridCapacity.rows, 1) }
     private(set) var isPseudoFullScreen = false
     private var frameBeforeFullScreen: NSRect = .zero
     private var isScreenTransitioning = false
@@ -21,6 +28,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private let background = BackgroundView()
     private let topBar = TopBarView()
+    /// 窗口最外圈的原生质感描边（顶部子视图，不拦截交互）
+    private var edgeStroke: EdgeStrokeView?
+    /// 仅承载网格滚动区，与顶栏/底栏 frame 互斥，避免子视图画出后被顶栏盖住
+    private let gridHost = NSView()
     private let bottomPaginationView = BottomPaginationView()
     private let selectionTray = SelectionTrayView()
     private let scrollView = SnapScrollView()
@@ -115,6 +126,77 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - 根视图
 
+    private static let topBarHeight: CGFloat = 56
+    /// 窗口化时的圆角（与系统窗口观感一致）
+    private static let windowCornerRadius: CGFloat = 18
+    /// 小屏窗口化时顶栏/底栏与网格滚动区之间的留白
+    private static let windowedChromeContentGap: CGFloat = 12
+
+    private struct RootChromeLayout {
+        var topBarFrame: NSRect
+        var gridHostFrame: NSRect
+        var bottomPaginationFrame: NSRect?
+        /// 底部为分页与留白预留的总高度（中转站纵向定位用）
+        var bottomReserved: CGFloat
+    }
+
+    /// 同步窗口最外圈样式：圆角、圆角曲率与描边。
+    ///
+    /// 曲率必须跟着「谁在裁剪窗口轮廓」走：
+    /// - 使用自定义背景图时轮廓由自家图层裁剪 → 用连续曲率，与系统窗口同形；
+    /// - 毛玻璃模式下轮廓由系统玻璃视图裁剪（其圆角只能为圆形）→ 保持圆形，描边才不会飘出轮廓。
+    private func syncWindowEdgeStyle() {
+        let radius: CGFloat = isPseudoFullScreen ? 0 : Self.windowCornerRadius
+        let continuous = background.usesContinuousCorners && !isPseudoFullScreen
+        window?.contentView?.layer?.cornerRadius = radius
+        window?.contentView?.layer?.cornerCurve = continuous ? .continuous : .circular
+        edgeStroke?.isHidden = isPseudoFullScreen
+        edgeStroke?.update(cornerRadius: radius, continuous: continuous)
+    }
+
+    /// 全屏时避开菜单栏安全区；窗口化顶栏由自绘区域承载，不再叠加 contentView safeArea
+    private func layoutTopInset() -> CGFloat {
+        guard isPseudoFullScreen else { return 0 }
+        return fullscreenTopInset()
+    }
+
+    private func windowedGridChromeGap() -> CGFloat {
+        isPseudoFullScreen ? 0 : Self.windowedChromeContentGap
+    }
+
+    private func rootChromeLayout(in bounds: NSRect) -> RootChromeLayout {
+        let topInset = layoutTopInset()
+        let gap = windowedGridChromeGap()
+        let showPagination = !bottomPaginationView.isHidden
+        let bottomBarH: CGFloat = 36
+        let bottomMargin: CGFloat = 16
+        let bottomBarBlock = showPagination ? (bottomBarH + bottomMargin * 2) : 0
+        let bottomReserved = bottomBarBlock + gap
+        let topBarFrame = NSRect(
+            x: 0,
+            y: bounds.height - Self.topBarHeight - topInset,
+            width: bounds.width,
+            height: Self.topBarHeight
+        )
+        let gridTop = topBarFrame.minY - gap
+        let gridH = max(0, gridTop - bottomReserved)
+        let gridHostFrame = NSRect(x: 0, y: bottomReserved, width: bounds.width, height: gridH)
+
+        var paginationFrame: NSRect?
+        if showPagination {
+            let barSize = bottomPaginationView.preferredSize
+            let barX = (bounds.width - barSize.width) / 2
+            paginationFrame = NSRect(x: barX, y: bottomMargin, width: barSize.width, height: barSize.height)
+        }
+
+        return RootChromeLayout(
+            topBarFrame: topBarFrame,
+            gridHostFrame: gridHostFrame,
+            bottomPaginationFrame: paginationFrame,
+            bottomReserved: bottomReserved
+        )
+    }
+
     private final class RootView: NSView {
         weak var controller: MainWindowController?
 
@@ -122,25 +204,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             super.layout()
             guard let c = controller else { return }
             let b = bounds
-            let topInset: CGFloat = c.isPseudoFullScreen ? c.fullscreenTopInset() : 0
+            let chrome = c.rootChromeLayout(in: b)
             c.background.frame = b
-            c.topBar.frame = NSRect(x: 0, y: b.height - 56 - topInset, width: b.width, height: 56)
+            c.edgeStroke?.frame = b
+            c.topBar.frame = chrome.topBarFrame
+            c.gridHost.frame = chrome.gridHostFrame
+            c.scrollView.frame = c.gridHost.bounds
+            c.scrollView.layoutSubtreeIfNeeded()
 
-            // 底部分页栏：放在界面下方正中间，小于等于 5 页时不显示左右切换箭头，大于 5 页再显示
-            let showPagination = !c.bottomPaginationView.isHidden
-            let bottomBarH: CGFloat = 36
-            let bottomMargin: CGFloat = 16
-            let bottomReserved: CGFloat = showPagination ? (bottomBarH + bottomMargin * 2) : 0
-
-            if showPagination {
-                let barSize = c.bottomPaginationView.preferredSize
-                let barX = (b.width - barSize.width) / 2
-                let barY: CGFloat = bottomMargin
-                c.bottomPaginationView.frame = NSRect(x: barX, y: barY, width: barSize.width, height: barSize.height)
+            if let paginationFrame = chrome.bottomPaginationFrame {
+                c.bottomPaginationView.frame = paginationFrame
             }
 
-            let scrollH = max(b.height - 56 - topInset - bottomReserved, 0)
-            c.scrollView.frame = NSRect(x: 0, y: bottomReserved, width: b.width, height: scrollH)
+            let scrollH = chrome.gridHostFrame.height
+            let bottomReserved = chrome.bottomReserved
 
             c.selectionTray.isHidden = !c.isSelectionMode
             if c.isSelectionMode {
@@ -167,6 +244,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     init(config: AppConfig) {
         self.config = config
+        self.gridCapacity = GridCapacity(columns: max(config.columns, 1), rows: max(config.rows, 1))
         let rect = Self.initialWindowFrame(config: config)
         let window = LauncherWindow(
             contentRect: rect,
@@ -181,7 +259,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 620, height: 440)
         window.collectionBehavior = []
         window.titleVisibility = .hidden
-        window.level = Self.windowLevel(isFullscreen: false, screen: nil, windowFrame: rect)
+        window.level = Self.windowLevel(isFullscreen: false)
         window.isReleasedWhenClosed = false
         window.isRestorable = false
         super.init(window: window)
@@ -191,17 +269,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let root = RootView()
         root.controller = self
         root.wantsLayer = true
-        root.layer?.cornerRadius = 18
+        root.layer?.cornerRadius = Self.windowCornerRadius
         root.layer?.masksToBounds = true
         root.layer?.backgroundColor = NSColor.clear.cgColor
         window.contentView = root
 
         background.setConfig(config)
+        gridHost.wantsLayer = true
+        gridHost.layer?.masksToBounds = true
+        gridHost.clipsToBounds = true
+        scrollView.autoresizingMask = []
+        scrollView.clipsToBounds = true
+        topBar.autoresizingMask = []
+        bottomPaginationView.autoresizingMask = []
+        gridHost.autoresizingMask = []
+
         root.addSubview(background)
-        root.addSubview(topBar)
-        root.addSubview(scrollView)
-        root.addSubview(selectionTray)
+        root.addSubview(gridHost)
+        gridHost.addSubview(scrollView)
         root.addSubview(bottomPaginationView)
+        root.addSubview(selectionTray)
+        root.addSubview(topBar)
+        // 描边最后添加：必须在所有内容之上（CALayer.border 会被子层盖住，所以用独立视图）
+        edgeStroke = EdgeStrokeView.install(on: root, cornerRadius: Self.windowCornerRadius, width: nil)
         scrollView.documentView = pagesContainer
 
         selectionTray.isHidden = true
@@ -308,7 +398,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         topBar.onGreen = { [weak self] in self?.togglePseudoFullScreen() }
         topBar.onSearchChanged = { [weak self] q in self?.applySearch(q) }
         topBar.onSettings = { [weak self] in self?.openSettings() }
-        topBar.onRefresh = { [weak self] in self?.rescan() }
         topBar.onSearchSubmit = { [weak self] in self?.activateFocusedOrFirstResult() }
     }
 
@@ -336,16 +425,66 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 扫描
 
     private var scanGeneration = 0
+    private var isScanning = false
+    /// 上次扫描完成时刻：下次增量扫描据此判断哪些 .app 目录未改动、可直接复用缓存
+    private var lastScanFinishedAt: Date?
+    /// 扫描期间又来了新的扫描请求（例如刚扫完用户就唤起了界面）
+    private var pendingScan = false
+    /// 下次增量扫描最早可执行时刻（避免连续唤起/连续设置变更时反复遍历磁盘）
+    private var nextAutoScanAt = Date.distantPast
+    private static let autoScanMinInterval: TimeInterval = 2.0
 
+    /// 全量扫描：重新解析每个 .app（显式「重新扫描」走这里）
     func startScan() {
+        scheduleScan(incremental: false)
+    }
+
+    /// 增量扫描：复用未变动应用的解析结果，只在有增删时才重排界面
+    func startIncrementalScan() {
+        scheduleScan(incremental: true)
+    }
+
+    private func scheduleScan(incremental: Bool) {
+        nextAutoScanAt = Date().addingTimeInterval(Self.autoScanMinInterval)
+        guard !isScanning else {
+            pendingScan = true
+            return
+        }
+        isScanning = true
         scanGeneration += 1
         let gen = scanGeneration
-        AppScanner.scan(paths: config.scanPaths, maxDepth: config.recursionDepth) { [weak self] apps in
+        let previous = incremental ? apps : []
+        let since = incremental ? lastScanFinishedAt : nil
+        let startedAt = Date()
+
+        AppScanner.scan(
+            paths: config.scanPaths,
+            maxDepth: config.recursionDepth,
+            previous: previous,
+            since: since
+        ) { [weak self] result in
             guard let self, gen == self.scanGeneration else { return }
-            self.apps = apps
-            NSLog("Rlaunch: 扫描完成，共 %d 个应用", apps.count)
-            self.reloadData()
+            self.isScanning = false
+            self.lastScanFinishedAt = startedAt
+            // 增量扫描没有任何增删时保持现状：不重建视图，避免每次唤起都闪一下
+            if !incremental || result.hasChanges {
+                let page = self.scrollView.currentPage
+                self.apps = result.apps
+                NSLog("Rlaunch: 扫描完成，共 %d 个应用（新增 %d，移除 %d）",
+                      result.apps.count, result.added.count, result.removed.count)
+                self.reloadData(keepPage: page)
+            }
+            if self.pendingScan {
+                self.pendingScan = false
+                self.scheduleScan(incremental: true)
+            }
         }
+    }
+
+    /// 每次把界面呈现给用户时调用：做一次增量扫描，替代原先的「手动刷新」按钮
+    private func refreshAppsOnPresentation() {
+        guard Date() >= nextAutoScanAt else { return }
+        startIncrementalScan()
     }
 
     private func rescan() {
@@ -369,8 +508,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 分页面数据：主桌面优先使用 pageOrders，各页独立、移走后不跨页填补。
     /// 分页容量统一交给 `PageComposer`（按网格实际格数计算），与布局使用同一套装箱算法。
     private func currentPagesItems() -> [[GridItem]] {
-        let cols = max(config.columns, 1)
-        let rows = max(config.rows, 1)
+        let cols = gridColumns
+        let rows = gridRows
         let all = allAvailableItems()
 
         // 搜索结果是临时视图，直接按容量切页，不参与 pageOrders 布局
@@ -401,8 +540,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             pages.append(pItems)
         }
 
+        // 关键：窗口缩小后每页格数会变少，历史编排可能超出当前容量；
+        // 必须先按当前容量顺延重排，否则超出的条目会被布局判定为「放不下」而静默消失。
+        let capacityPages = PageComposer.trimTrailingEmpty(
+            PageComposer.reflow(pages, from: 0, columns: cols, rows: rows))
+
         let unvisited = all.filter { !visited.contains($0.identifier) }
-        return PageComposer.compose(savedPages: pages, unvisited: unvisited, columns: cols, rows: rows)
+        return PageComposer.compose(savedPages: capacityPages, unvisited: unvisited, columns: cols, rows: rows)
     }
 
     private func savePagesOrder(_ newPages: [[GridItem]]) {
@@ -428,29 +572,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return itemMap["app:\(orderKey)"]
     }
 
-    private func gridConfig() -> GridLayoutConfig {
+    /// 当前网格**实际可用容量**：窗口可以被手动缩到很小，此时必须同步减少每页的行列数，
+    /// 否则「分页认为放得下、布局却放不下」的条目会被裁掉或压到顶栏下面。
+    /// 全屏时始终使用用户配置的规格。
+    private func gridCapacity(forViewport viewport: NSSize) -> GridCapacity {
+        let configured = GridCapacity(columns: config.columns, rows: config.rows)
+        guard !isPseudoFullScreen else { return configured }
+        return GridMetrics.capacity(viewport: viewport, configured: configured)
+    }
+
+    /// 按当前可视区域推算网格参数：全屏放大铺满；窗口化在容量范围内尽量使用配置的图标尺寸，
+    /// 放不下时按比例收紧间距与图标，保证整页永远落在可视区内（不会被顶栏/底栏压住）。
+    private func gridConfig(forViewport viewport: NSSize, capacity: GridCapacity) -> GridLayoutConfig {
         if isPseudoFullScreen, let screen = window?.screen ?? NSScreen.main {
-            let W = screen.frame.width
-            let H = screen.frame.height
-            let cols = CGFloat(config.columns)
-            let rows = CGFloat(config.rows)
-            let scale = CGFloat(config.fullscreenSpacingScale)
-            let colSpacing = max(14, CGFloat(config.columnSpacing) * scale)
-            let rowSpacing = max(14, CGFloat(config.rowSpacing) * scale)
-            let labelH: CGFloat = 36
-            let iconForW = (W * 0.88 - (cols - 1) * colSpacing) / cols - 16
-            let iconForH = (H * 0.84 - (rows - 1) * rowSpacing) / rows - labelH - 8
-            let icon = min(160, max(CGFloat(config.iconSize), min(iconForW, iconForH)))
-            return GridLayoutConfig(
-                columns: config.columns, rows: config.rows,
-                columnSpacing: colSpacing, rowSpacing: rowSpacing, iconSize: icon
+            return GridMetrics.fullscreenConfig(
+                screenSize: screen.frame.size,
+                configured: GridCapacity(columns: config.columns, rows: config.rows),
+                preferredIconSize: CGFloat(config.iconSize),
+                columnSpacing: CGFloat(config.columnSpacing),
+                rowSpacing: CGFloat(config.rowSpacing),
+                spacingScale: CGFloat(config.fullscreenSpacingScale)
             )
         }
-        return GridLayoutConfig(
-            columns: config.columns, rows: config.rows,
+        return GridMetrics.windowedConfig(
+            viewport: viewport,
+            capacity: capacity,
+            preferredIconSize: CGFloat(config.iconSize),
             columnSpacing: CGFloat(config.columnSpacing),
-            rowSpacing: CGFloat(config.rowSpacing),
-            iconSize: CGFloat(config.iconSize)
+            rowSpacing: CGFloat(config.rowSpacing)
         )
     }
 
@@ -470,7 +619,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         let ids = selectedIdentifiers
         let isLimitReached = selectedItems.count >= Self.maxSelectionCount
-        let cfg = gridConfig()
+        let cfg = refreshGridMetrics(viewport: scrollView.bounds.size)
 
         // 复用已有页面视图（页面索引与页号一一对应且只从尾部增删）：
         // 搜索输入、设置变更只需更新内容，避免整页重建导致的卡顿与瞬时闪烁。
@@ -559,15 +708,36 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func applyGridConfig() {
-        let cfg = gridConfig()
-        for page in pages { page.layoutConfig = cfg }
         lastLayoutSize = .zero
+        lastGridLayoutConfig = nil
         didLayoutRoot()
     }
 
+    /// 按当前可视区重新推算「容量 + 网格参数」，并写入缓存供分页使用
+    @discardableResult
+    private func refreshGridMetrics(viewport: NSSize) -> GridLayoutConfig {
+        let capacity = gridCapacity(forViewport: viewport)
+        let cfg = gridConfig(forViewport: viewport, capacity: capacity)
+        gridCapacity = capacity
+        lastGridLayoutConfig = cfg
+        lastLayoutSize = viewport
+        return cfg
+    }
+
+    /// 容量变化（手动缩放窗口）后需要重新分页：合并到下一次 runloop，避免拖动过程中反复重建
+    private func scheduleRepaginate() {
+        guard !needsRepaginate else { return }
+        needsRepaginate = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.needsRepaginate = false
+            self.reloadData(keepPage: self.scrollView.currentPage)
+        }
+    }
+
     private func layoutPages() {
-        let w = max(scrollView.contentSize.width, 1)
-        let h = max(scrollView.contentSize.height, 1)
+        let w = max(scrollView.bounds.width, 1)
+        let h = max(scrollView.bounds.height, 1)
         pagesContainer.frame = NSRect(x: 0, y: 0, width: CGFloat(pages.count) * w, height: h)
         for (i, page) in pages.enumerated() {
             page.frame = NSRect(x: CGFloat(i) * w, y: 0, width: w, height: h)
@@ -576,13 +746,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func didLayoutRoot() {
         let size = scrollView.bounds.size
-        guard size.width > 0, size.height > 0, size != lastLayoutSize else { return }
+        guard size.width > 0, size.height > 0 else { return }
+
+        let capacity = gridCapacity(forViewport: size)
+        let cfg = gridConfig(forViewport: size, capacity: capacity)
+        let sizeChanged = size != lastLayoutSize
+        let capacityChanged = capacity != gridCapacity
+        let cfgChanged = cfg != lastGridLayoutConfig
+        guard sizeChanged || capacityChanged || cfgChanged else { return }
+
         lastLayoutSize = size
+        lastGridLayoutConfig = cfg
+        gridCapacity = capacity
+
         let page = scrollView.currentPage
         layoutPages()
+        if cfgChanged || capacityChanged {
+            for page in pages { page.layoutConfig = cfg }
+        }
         scrollView.scrollToPage(min(page, scrollView.pageCount - 1), animated: false)
         topBar.setPage(scrollView.currentPage, of: scrollView.pageCount)
         bottomPaginationView.setPage(scrollView.currentPage, total: scrollView.pageCount)
+
+        // 每页格数变了：分页要跟着重排，否则超出的条目会被布局丢弃
+        if capacityChanged { scheduleRepaginate() }
     }
 
     // MARK: - 动作
@@ -604,6 +791,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if config.hideOnLaunch || isPseudoFullScreen {
             hide()
         }
+        // 窗口化时不做任何强制降层：被启动的应用激活后系统会自然把它带到前面，
+        // 手动 orderBack 会让「点一下桌面就被压到最底层」，与普通应用的行为不一致。
     }
 
     /// 回车：优先打开键盘焦点条目；搜索状态下退化为打开首个结果
@@ -629,8 +818,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 方向键导航：已有焦点时在网格中移动（横向到边界则翻页）；
     /// 尚无焦点时 `↑/↓` 建立焦点，`←/→` 保持原有的翻页手感。
     private func moveFocus(dx: Int, dy: Int) {
-        let cols = max(config.columns, 1)
-        let rows = max(config.rows, 1)
+        let cols = gridColumns
+        let rows = gridRows
         let pageList = currentPagesItems()
         guard !pageList.isEmpty else { return }
 
@@ -689,7 +878,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             isSelectionMode: isSelectionMode,
             selectedIdentifiers: selectedIdentifiers,
             pendingPlaceAppsCount: appCount,
-            isSelectionDisabled: isLimitReached
+            isSelectionDisabled: isLimitReached,
+            usesBackgroundImage: !(config.backgroundImagePath ?? "").isEmpty,
+            darkPresetId: config.darkBgPreset,
+            lightPresetId: config.lightBgPreset
         )
         popover.frame = window?.contentView?.bounds ?? .zero
         popover.autoresizingMask = [.width, .height]
@@ -943,8 +1135,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             selectedItems,
             toPage: p,
             in: currentPagesItems(),
-            columns: max(config.columns, 1),
-            rows: max(config.rows, 1)
+            columns: gridColumns,
+            rows: gridRows
         )
 
         savePagesOrder(pageList)
@@ -973,8 +1165,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             toPage: p,
             at: targetIndex,
             in: currentPagesItems(),
-            columns: max(config.columns, 1),
-            rows: max(config.rows, 1)
+            columns: gridColumns,
+            rows: gridRows
         )
 
         // 如果包含从文件夹内拖出来的应用，从该文件夹内剔除
@@ -1026,8 +1218,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             [.folder(newFolder)],
             toPage: p,
             in: PageComposer.removing(selectedIds, from: currentPagesItems()),
-            columns: max(config.columns, 1),
-            rows: max(config.rows, 1)
+            columns: gridColumns,
+            rows: gridRows
         )
 
         // 将新文件夹正式纳入配置并持久化
@@ -1088,8 +1280,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 [.app(appInfo)],
                 fromPage: scrollView.currentPage,
                 in: pageList,
-                columns: max(config.columns, 1),
-                rows: max(config.rows, 1)
+                columns: gridColumns,
+                rows: gridRows
             )
         }
 
@@ -1126,8 +1318,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             released,
             fromPage: startPage,
             in: pageList,
-            columns: max(config.columns, 1),
-            rows: max(config.rows, 1)
+            columns: gridColumns,
+            rows: gridRows
         )
 
         savePagesOrder(pageList)
@@ -1563,9 +1755,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         applyWindowLevel()
         if !isPseudoFullScreen {
-            window.contentView?.layer?.cornerRadius = 18
-            background.setCornerRadius(18)
+            window.contentView?.layer?.cornerRadius = Self.windowCornerRadius
+            background.setCornerRadius(Self.windowCornerRadius)
         }
+        syncWindowEdgeStyle()
         let wasVisible = window.isVisible
         // 整窗不做 alpha 动画（毛玻璃在 alpha < 1 时无法正确采样桌面背景）
         window.alphaValue = 1
@@ -1583,6 +1776,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if !wasVisible { fadeInContent() }
         else { setContentAlpha(1, animated: false) }
         window.makeFirstResponder(scrollView)
+        // 每次呈现界面都做一次增量扫描：新装/卸载的应用无需手动刷新即可出现
+        refreshAppsOnPresentation()
     }
 
     /// 获取鼠标当前所在的屏幕（分屏多显示器定位）
@@ -1610,6 +1805,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             window.contentView?.layer?.cornerRadius = 0
             window.contentView?.layer?.masksToBounds = true
             background.setCornerRadius(0)
+            syncWindowEdgeStyle()
             topBar.traffic.isHidden = true
             topBar.setFullscreen(true)
             applyWindowLevel()
@@ -1683,9 +1879,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         isPseudoFullScreen = false
         window.isMovableByWindowBackground = false
-        window.contentView?.layer?.cornerRadius = 18
+        window.contentView?.layer?.cornerRadius = Self.windowCornerRadius
         window.contentView?.layer?.masksToBounds = true
-        background.setCornerRadius(18)
+        background.setCornerRadius(Self.windowCornerRadius)
+        syncWindowEdgeStyle()
         topBar.traffic.isHidden = false
         topBar.setFullscreen(false)
         applyWindowLevel()
@@ -1733,6 +1930,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             || previous.lightBgPreset != config.lightBgPreset
             || previous.theme != config.theme {
             background.setConfig(config)
+            syncWindowEdgeStyle()
         }
         reloadData(keepPage: page)
     }
@@ -1748,6 +1946,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reloadData(keepPage: scrollView.currentPage)
         }
     }
+
+
 
     // MARK: - 窗口位置记忆
 
@@ -1789,28 +1989,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - 窗口层级
 
-    private func prefersNormalWindowStacking() -> Bool {
-        guard let window, let screen = window.screen ?? NSScreen.main else { return false }
-        let vf = screen.visibleFrame
-        let windowArea = window.frame.width * window.frame.height
-        let screenArea = max(vf.width * vf.height, 1)
-        return windowArea / screenArea >= 0.7
-    }
-
-    private static func windowLevel(isFullscreen: Bool, screen: NSScreen?, windowFrame: NSRect) -> NSWindow.Level {
+    private static func windowLevel(isFullscreen: Bool) -> NSWindow.Level {
         if isFullscreen {
             return NSWindow.Level(
                 rawValue: NSWindow.Level.RawValue(CGWindowLevelForKey(.mainMenuWindow)) + 1)
         }
-        let s = screen ?? NSScreen.main
-        let useNormal: Bool = {
-            guard let s else { return false }
-            let vf = s.visibleFrame
-                let windowArea = windowFrame.width * windowFrame.height
-            let screenArea = max(vf.width * vf.height, 1)
-            return windowArea / screenArea >= 0.7
-        }()
-        return useNormal ? .normal : .floating
+        // 窗口化始终使用普通层级，避免小窗一直浮在其他应用之上
+        return .normal
     }
 
     private static func pseudoFullScreenFrame(for screen: NSScreen) -> NSRect {
@@ -1824,8 +2009,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func applyWindowLevel() {
         guard let window else { return }
-        window.level = Self.windowLevel(
-            isFullscreen: isPseudoFullScreen, screen: window.screen, windowFrame: window.frame)
+        window.level = Self.windowLevel(isFullscreen: isPseudoFullScreen)
         if let settingsWindow = settingsController?.window, settingsWindow.isVisible {
             settingsWindow.level = window.level
         }
@@ -1841,10 +2025,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func otherAppDidActivate(_ note: Notification) {
-        guard window?.isVisible == true else { return }
+        guard let window, window.isVisible else { return }
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
-        deferToOtherApps()
+        // 只有伪全屏时才主动收起；窗口化模式保持普通窗口层级，由系统按激活顺序排布
+        if isPseudoFullScreen {
+            deferToOtherApps()
+        }
     }
 
     private func deferToOtherApps() {
@@ -1858,9 +2045,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        guard window?.isVisible == true else { return }
+        guard let window, window.isVisible else { return }
         if shouldSkipDeferOnFocusLoss() { return }
-        // 只有全屏模式下失焦才隐藏；小屏模式下点击外部空白失焦不关闭界面
+        // 小窗失焦：什么都不做。窗口本身是 .normal 层级，失焦后自然不再挡在最前面，
+        // 但也不会被强行压到所有窗口之下（之前 orderBack 导致的 bug）。
         guard isPseudoFullScreen else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window, window.isVisible, !window.isKeyWindow else { return }
@@ -1902,10 +2090,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self.isPseudoFullScreen = targetFullscreen
             self.applyWindowLevel()
             window.isMovableByWindowBackground = false
-            let radius: CGFloat = targetFullscreen ? 0 : 18
+            let radius: CGFloat = targetFullscreen ? 0 : Self.windowCornerRadius
             window.contentView?.layer?.cornerRadius = radius
             window.contentView?.layer?.masksToBounds = true
             self.background.setCornerRadius(radius)
+            self.syncWindowEdgeStyle()
             self.topBar.traffic.isHidden = targetFullscreen
             self.topBar.setFullscreen(targetFullscreen)
 

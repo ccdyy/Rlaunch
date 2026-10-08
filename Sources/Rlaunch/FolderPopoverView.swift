@@ -9,12 +9,21 @@ final class FlippedGridView: NSView {
 /// 文件夹展开弹窗视图：半透明居中弹框，展示文件夹内全部应用，支持启动、更名、解散、从文件夹移出、长按多选与中转站放入。
 final class FolderPopoverView: NSView {
 
+    private static let cardCornerRadius: CGFloat = 22
+
     var folder: FolderConfig
     var allApps: [AppInfo]
     var isSelectionMode: Bool = false
     var selectedIdentifiers: Set<String> = []
     var pendingPlaceAppsCount: Int = 0
     var isSelectionDisabled: Bool = false
+    /// 当前背景预设（用于让卡片与主界面同色系）
+    var darkPresetId: String = "default"
+    var lightPresetId: String = "softGray"
+    /// 是否使用自定义背景图：背景图比纯色预设更需要压色，才能保证卡片内文字可读
+    var usesBackgroundImage: Bool = false {
+        didSet { if oldValue != usesBackgroundImage { updateThemeAppearance() } }
+    }
 
     var onLaunchApp: ((AppInfo) -> Void)?
     var onRemoveApp: ((AppInfo) -> Void)?
@@ -30,6 +39,14 @@ final class FolderPopoverView: NSView {
     private let dimmingMask = NSView()
     private let cardShadowContainer = NSView()
     private let cardView = NSView()
+    /// 卡片玻璃背板：直接采样**本窗口**的背景（自定义背景图或毛玻璃预设色），
+    /// 因此卡片会随背景一起变化，而不是一块与背景割裂的纯色板。
+    private var cardBackdrop: NSView!
+    /// 与背景同色系的极轻调色层：只用于压出可读性，不破坏通透感
+    private let cardTint = NSView()
+    /// 卡片内容承载层（玻璃容器内部，位于调色层之上）
+    private var cardContentHost: NSView!
+    private var edgeStroke: EdgeStrokeView?
     private let titleField = NSTextField()
     private let closeButton = NSButton()
     private let dissolveButton = NSButton()
@@ -49,7 +66,10 @@ final class FolderPopoverView: NSView {
         isSelectionMode: Bool = false,
         selectedIdentifiers: Set<String> = [],
         pendingPlaceAppsCount: Int = 0,
-        isSelectionDisabled: Bool = false
+        isSelectionDisabled: Bool = false,
+        usesBackgroundImage: Bool = false,
+        darkPresetId: String = "default",
+        lightPresetId: String = "softGray"
     ) {
         self.folder = folder
         self.allApps = allApps
@@ -57,6 +77,9 @@ final class FolderPopoverView: NSView {
         self.selectedIdentifiers = selectedIdentifiers
         self.pendingPlaceAppsCount = pendingPlaceAppsCount
         self.isSelectionDisabled = isSelectionDisabled
+        self.usesBackgroundImage = usesBackgroundImage
+        self.darkPresetId = darkPresetId
+        self.lightPresetId = lightPresetId
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -73,12 +96,23 @@ final class FolderPopoverView: NSView {
         cardShadowContainer.layer?.shadowRadius = 24
         addSubview(cardShadowContainer)
 
-        // 内容卡片：纯净半透明圆角卡片（杜绝 NSVisualEffectView 的顶部黑色横线）
+        // 内容卡片：圆角玻璃卡片。圆角交给 cardView 的 layer 裁剪（不使用 maskImage，
+        // 从而杜绝 NSVisualEffectView 顶部残留黑线的问题）
+        // 轮廓完全由 cardView 自己的图层决定 → 用连续曲率圆角，与系统窗口/卡片同形；
+        // 描边不能写在 cardView.layer 上（会被下面的背板/调色/内容子层盖住），改用最上层的描边视图。
         cardView.wantsLayer = true
-        cardView.layer?.cornerRadius = 22
-        cardView.layer?.masksToBounds = true
-        cardView.layer?.borderWidth = 1
+        cardView.layer?.applyRoundedCorner(radius: Self.cardCornerRadius, continuous: true, masksToBounds: true)
         cardShadowContainer.addSubview(cardView)
+
+        // 玻璃背板（macOS 26+ 原生 Liquid Glass，采样窗口自身内容）→ 极轻的同色系调色 → 内容
+        let (backdrop, host) = SystemGlass.makeInWindowContainer(
+            cornerRadius: Self.cardCornerRadius, material: .popover)
+        cardBackdrop = backdrop
+        cardContentHost = host
+        cardView.addSubview(backdrop)
+        cardTint.wantsLayer = true
+        cardTint.autoresizingMask = [.width, .height]
+        host.addSubview(cardTint)
 
         // 文件夹标题（可就地编辑）
         titleField.stringValue = folder.name.isEmpty ? L10n.t("文件夹") : folder.name
@@ -91,7 +125,7 @@ final class FolderPopoverView: NSView {
         titleField.focusRingType = .none
         titleField.target = self
         titleField.action = #selector(titleEdited)
-        cardView.addSubview(titleField)
+        cardContentHost.addSubview(titleField)
 
         // 解散文件夹按钮
         dissolveButton.bezelStyle = .inline
@@ -101,7 +135,7 @@ final class FolderPopoverView: NSView {
         dissolveButton.contentTintColor = .secondaryLabelColor
         dissolveButton.target = self
         dissolveButton.action = #selector(dissolveClicked)
-        cardView.addSubview(dissolveButton)
+        cardContentHost.addSubview(dissolveButton)
 
         // 放入中转站选中的应用快捷按钮
         placePendingButton.isBordered = false
@@ -112,7 +146,7 @@ final class FolderPopoverView: NSView {
         placePendingButton.target = self
         placePendingButton.action = #selector(placePendingClicked)
         placePendingButton.isHidden = true
-        cardView.addSubview(placePendingButton)
+        cardContentHost.addSubview(placePendingButton)
 
         // 关闭按钮
         closeButton.isBordered = false
@@ -121,12 +155,12 @@ final class FolderPopoverView: NSView {
         closeButton.contentTintColor = .secondaryLabelColor
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
-        cardView.addSubview(closeButton)
+        cardContentHost.addSubview(closeButton)
 
         // 底部应用总数
         countLabel.font = .systemFont(ofSize: 11, weight: .regular)
         countLabel.textColor = .secondaryLabelColor
-        cardView.addSubview(countLabel)
+        cardContentHost.addSubview(countLabel)
 
         // 滚动区域：必须设置 borderType = .noBorder，彻底杜绝默认 bezelBorder 产生的“黑色横线”
         scrollView.borderType = .noBorder
@@ -135,7 +169,13 @@ final class FolderPopoverView: NSView {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.documentView = gridContainer
-        cardView.addSubview(scrollView)
+        cardContentHost.addSubview(scrollView)
+
+        // 最后安装描边：位于内容之上，且不拦截点击
+        edgeStroke = EdgeStrokeView.install(on: cardView,
+                                           cornerRadius: Self.cardCornerRadius,
+                                           width: 1,
+                                           continuous: true)
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
@@ -166,21 +206,26 @@ final class FolderPopoverView: NSView {
 
     private func updateThemeAppearance() {
         let dark = isDarkMode
+        // 玻璃背板之上叠一层自适应调色：纯色预设背景可以更透（保留毛玻璃质感），
+        // 自定义背景图则压得更实一些，避免图片纹理干扰图标与文字。
         if dark {
-            // 暗色：中性石墨灰（而非近黑），配细边框，避免整块“糊成一团黑”
-            dimmingMask.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
-            cardView.layer?.backgroundColor = NSColor(calibratedWhite: 0.28, alpha: 0.98).cgColor
-            cardView.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+            cardTint.layer?.backgroundColor = usesBackgroundImage
+                ? NSColor(calibratedWhite: 0.10, alpha: 0.58).cgColor
+                : NSColor(calibratedWhite: 0.16, alpha: 0.30).cgColor
+            edgeStroke?.update(color: NSColor.white.withAlphaComponent(0.14))
             cardShadowContainer.layer?.shadowColor = NSColor.black.cgColor
             cardShadowContainer.layer?.shadowOpacity = 0.45
+            dimmingMask.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.22).cgColor
         } else {
-            // 亮色：纯净白瓷卡片
-            dimmingMask.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.16).cgColor
-            cardView.layer?.backgroundColor = NSColor(calibratedWhite: 0.99, alpha: 0.99).cgColor
-            cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.10).cgColor
+            cardTint.layer?.backgroundColor = usesBackgroundImage
+                ? NSColor.white.withAlphaComponent(0.74).cgColor
+                : NSColor.white.withAlphaComponent(0.50).cgColor
+            edgeStroke?.update(color: NSColor.black.withAlphaComponent(0.10))
             cardShadowContainer.layer?.shadowColor = NSColor.black.cgColor
             cardShadowContainer.layer?.shadowOpacity = 0.20
+            dimmingMask.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.12).cgColor
         }
+        cardView.layer?.backgroundColor = NSColor.clear.cgColor
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -396,6 +441,10 @@ final class FolderPopoverView: NSView {
 
         cardShadowContainer.frame = cardRect
         cardView.frame = cardShadowContainer.bounds
+        // 玻璃铺满卡片；内容宿主挂在玻璃容器内部，调色层与内容都与它等大
+        cardBackdrop.frame = cardView.bounds
+        cardContentHost.frame = cardBackdrop.bounds
+        cardTint.frame = cardContentHost.bounds
 
         // 头部
         titleField.frame = NSRect(x: 24, y: cardH - 46, width: max(120, cardW - 240), height: 26)

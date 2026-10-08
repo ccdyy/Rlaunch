@@ -83,6 +83,26 @@ enum SystemGlass {
         return (effect, effect)
     }
 
+    /// 创建一个**窗口内**玻璃容器（卡片 / 浮层用）。
+    ///
+    /// 与 `makeBackground` 的区别：背景层在窗口最底部，采样的是**桌面**；
+    /// 卡片浮层叠在窗口内容之上，需要采样**窗口自身的内容**（背景图 / 毛玻璃预设色 / 图标）。
+    /// macOS 26+ 的原生 Liquid Glass 本身就会采样其身后的窗口内容；
+    /// 更早系统则显式使用 `.withinWindow`，否则会错误地透出桌面壁纸。
+    static func makeInWindowContainer(cornerRadius: CGFloat,
+                                      material: NSVisualEffectView.Material) -> (view: NSView, contentHost: NSView) {
+        if isNativeGlassAvailable {
+            return makeContainer(cornerRadius: cornerRadius, material: material)
+        }
+        let effect = NSVisualEffectView()
+        effect.material = material
+        effect.blendingMode = .withinWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        setCornerRadius(cornerRadius, on: effect)
+        return (effect, effect)
+    }
+
     // MARK: - 圆角
 
     /// 统一设置圆角：原生玻璃用自带属性，毛玻璃用 maskImage

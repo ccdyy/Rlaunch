@@ -570,6 +570,122 @@ func testPageComposer() {
           "追加到已满页时按容量顺延到下一页")
 }
 
+// MARK: - 网格容量与尺寸推算
+
+func testGridMetrics() {
+    print("GridMetrics:")
+
+    let configured = GridCapacity(columns: 7, rows: 5)
+
+    // 窗口最小尺寸（620×440）下的可视网格区：高度不足时减少行数而不是把内容裁掉
+    let smallViewport = CGSize(width: 620, height: 292)
+    let small = GridMetrics.capacity(viewport: smallViewport, configured: configured)
+    check(small.columns == 7, "宽度足够时列数保持配置值")
+    check(small.rows == 3, "高度不足时行数收缩到 3（620×292）")
+
+    // 大窗口：完全按配置
+    let big = GridMetrics.capacity(viewport: CGSize(width: 1600, height: 900), configured: configured)
+    check(big == configured, "大窗口容量等于配置值")
+
+    // 容量下限：极端窄小也不会变成 0
+    let tiny = GridMetrics.capacity(viewport: CGSize(width: 40, height: 40), configured: configured)
+    check(tiny.columns >= 1 && tiny.rows >= 1, "极端尺寸下容量至少为 1×1")
+
+    // 任一窗口尺寸下，推算出的网格都必须完整落在可视区内（顶栏遮挡问题的根因回归）
+    var overflow: [String] = []
+    var grew: [String] = []
+    for w in stride(from: CGFloat(620), through: 1800, by: 40) {
+        for h in stride(from: CGFloat(200), through: 1000, by: 20) {
+            let viewport = CGSize(width: w, height: h)
+            let capacity = GridMetrics.capacity(viewport: viewport, configured: configured)
+            let cfg = GridMetrics.windowedConfig(
+                viewport: viewport, capacity: capacity,
+                preferredIconSize: 64, columnSpacing: 24, rowSpacing: 24)
+            if cfg.gridPixelHeight > h + 0.01 || cfg.gridPixelWidth > w + 0.01 {
+                overflow.append("\(Int(w))×\(Int(h))")
+            }
+            if cfg.iconSize > 64 + 0.01 { grew.append("\(Int(w))×\(Int(h))") }
+        }
+    }
+    check(overflow.isEmpty, "任意窗口尺寸下网格都不超出可视区\(overflow.isEmpty ? "" : "：" + overflow.prefix(3).joined(separator: ", "))")
+    check(grew.isEmpty, "窗口化时图标不会超过配置尺寸")
+
+    // 图标不会小于下限，且间距收紧后仍保持正向
+    let cramped = GridMetrics.windowedConfig(
+        viewport: CGSize(width: 620, height: 300), capacity: GridCapacity(columns: 7, rows: 3),
+        preferredIconSize: 128, columnSpacing: 60, rowSpacing: 60)
+    check(cramped.iconSize >= GridMetrics.minIconSize, "间距自动收紧后图标不低于下限")
+    check(cramped.gridPixelHeight <= 300.01, "间距收紧后依然不溢出")
+
+    // 全屏：图标按屏幕放大
+    let full = GridMetrics.fullscreenConfig(
+        screenSize: CGSize(width: 1920, height: 1080), configured: configured,
+        preferredIconSize: 64, columnSpacing: 24, rowSpacing: 24, spacingScale: 1.6)
+    check(full.columns == 7 && full.rows == 5, "全屏使用配置的行列数")
+    check(full.iconSize >= 64, "全屏时图标不小于配置尺寸")
+
+    // 布局像素计算自洽
+    check(GridLayoutConfig.defaults.gridPixelWidth > 0 && GridLayoutConfig.defaults.gridPixelHeight > 0,
+          "默认网格尺寸计算为正数")
+}
+
+// MARK: - 增量扫描
+
+func testIncrementalScan() throws {
+    print("AppScanner(Incremental):")
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("rlaunch-inc-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    func makeApp(named name: String, bundleID: String) throws {
+        let contents = root.appendingPathComponent("\(name).app/Contents/MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "CFBundleIdentifier": bundleID,
+            "CFBundleName": name,
+            "CFBundlePackageType": "APPL",
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try data.write(to: contents.deletingLastPathComponent().appendingPathComponent("Info.plist"))
+    }
+
+    try makeApp(named: "Alpha", bundleID: "com.test.alpha")
+    try makeApp(named: "Beta", bundleID: "com.test.beta")
+
+    func runScan(previous: [AppInfo], since: Date?) -> AppScanResult {
+        var result: AppScanResult?
+        AppScanner.scan(paths: [root.path], maxDepth: 2, previous: previous, since: since) { result = $0 }
+        let deadline = Date().addingTimeInterval(10)
+        while result == nil && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+        }
+        return result ?? AppScanResult(apps: [], added: [], removed: [])
+    }
+
+    let first = runScan(previous: [], since: nil)
+    check(first.apps.count == 2, "首次扫描扫到 2 个应用")
+    check(first.added.count == 2, "首次扫描全部为新增")
+
+    let since = Date().addingTimeInterval(1)   // 晚于刚才创建的目录时间
+    let unchanged = runScan(previous: first.apps, since: since)
+    check(unchanged.apps.count == 2, "增量扫描结果数量不变")
+    check(!unchanged.hasChanges, "目录未改动时判定为「无变化」（界面无需重排）")
+    check(unchanged.apps.map(\.name) == first.apps.map(\.name), "增量扫描复用缓存后顺序保持一致")
+
+    try makeApp(named: "Gamma", bundleID: "com.test.gamma")
+    let afterAdd = runScan(previous: unchanged.apps, since: since)
+    check(afterAdd.apps.count == 3, "新增应用被增量扫描发现")
+    check(afterAdd.added.map(\.name) == ["Gamma"], "增量差异正确报告新增项")
+    check(afterAdd.removed.isEmpty, "没有应用被移除时不报告移除项")
+
+    try FileManager.default.removeItem(at: root.appendingPathComponent("Beta.app"))
+    let afterRemove = runScan(previous: afterAdd.apps, since: Date())
+    check(afterRemove.apps.count == 2, "删除应用后增量扫描结果减少")
+    check(afterRemove.removed.map(\.name) == ["Beta"], "增量差异正确报告移除项")
+    check(afterRemove.hasChanges, "有增删时 hasChanges 为真")
+}
+
 // MARK: - 入口
 
 do {
@@ -580,6 +696,8 @@ do {
     testAppVersion()
     testGridPacker()
     testPageComposer()
+    testGridMetrics()
+    try testIncrementalScan()
     try testScanner()
     try testConfigStore()
     try testFolderAndGridItem()

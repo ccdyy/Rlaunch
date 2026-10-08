@@ -9,11 +9,15 @@ import RlaunchCore
 /// 这里改成窗口内的浮层，天然位于最上层，且不阻塞主线程。
 final class PromptOverlayView: NSView {
 
+    private static let cardCornerRadius: CGFloat = 16
+
+
     var onConfirm: ((String) -> Void)?
     var onCancel: (() -> Void)?
 
     private let dimmingMask = NSView()
     private let cardView = NSView()
+    private var edgeStroke: EdgeStrokeView?
     private let titleLabel = NSTextField(labelWithString: "")
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let textField = NSTextField()
@@ -65,9 +69,7 @@ final class PromptOverlayView: NSView {
         addSubview(dimmingMask)
 
         cardView.wantsLayer = true
-        cardView.layer?.cornerRadius = 16
-        cardView.layer?.masksToBounds = true
-        cardView.layer?.borderWidth = 1
+        cardView.layer?.applyRoundedCorner(radius: Self.cardCornerRadius, continuous: true, masksToBounds: true)
         addSubview(cardView)
 
         titleLabel.stringValue = title
@@ -108,6 +110,12 @@ final class PromptOverlayView: NSView {
         confirmButton.keyEquivalent = "\r" // Enter
         cardView.addSubview(confirmButton)
 
+        // 最后安装描边：位于内容之上，且不拦截输入
+        edgeStroke = EdgeStrokeView.install(on: cardView,
+                                           cornerRadius: Self.cardCornerRadius,
+                                           width: 1,
+                                           continuous: true)
+
         updateAppearance()
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
@@ -133,9 +141,9 @@ final class PromptOverlayView: NSView {
         cardView.layer?.backgroundColor = (isDark
             ? NSColor(calibratedWhite: 0.24, alpha: 0.99)
             : NSColor(calibratedWhite: 0.99, alpha: 0.99)).cgColor
-        cardView.layer?.borderColor = (isDark
+        edgeStroke?.update(color: isDark
             ? NSColor.white.withAlphaComponent(0.18)
-            : NSColor.black.withAlphaComponent(0.10)).cgColor
+            : NSColor.black.withAlphaComponent(0.10))
     }
 
     // MARK: - 展示 / 收起

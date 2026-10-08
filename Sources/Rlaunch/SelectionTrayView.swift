@@ -153,6 +153,9 @@ final class TrayItemView: NSView {
 
 final class SelectionTrayView: NSView {
 
+    private static let cardCornerRadius: CGFloat = 18
+
+
     static let maxSelectionCount = 10
     static let sideMargin: CGFloat = 8
     static let itemSpacing: CGFloat = 10
@@ -167,6 +170,7 @@ final class SelectionTrayView: NSView {
 
     // 采用纯净半透明圆角卡片，彻底根除 NSVisualEffectView 在顶部的黑色横线
     private let backgroundCard = NSView()
+    private var edgeStroke: EdgeStrokeView?
     private let closeButton = NSButton()
     private let scrollView = NSScrollView()
     private let iconsContainer = NSView()
@@ -181,9 +185,7 @@ final class SelectionTrayView: NSView {
         layer?.masksToBounds = false
 
         backgroundCard.wantsLayer = true
-        backgroundCard.layer?.cornerRadius = 18
-        backgroundCard.layer?.masksToBounds = true
-        backgroundCard.layer?.borderWidth = 1
+        backgroundCard.layer?.applyRoundedCorner(radius: Self.cardCornerRadius, continuous: true, masksToBounds: true)
         addSubview(backgroundCard)
 
         closeButton.isBordered = false
@@ -207,6 +209,12 @@ final class SelectionTrayView: NSView {
         setupActionButton(placeButton, title: L10n.t("放本页"), bg: NSColor.controlAccentColor, action: #selector(placeClicked))
         // 新建文件夹按钮（≥2个App时显示）
         setupActionButton(createFolderButton, title: L10n.t("建文件夹"), bg: NSColor.systemGreen, action: #selector(createFolderClicked))
+
+        // 最后安装描边：位于内容之上，不拦截拖动/点击
+        edgeStroke = EdgeStrokeView.install(on: backgroundCard,
+                                            cornerRadius: Self.cardCornerRadius,
+                                            width: 1,
+                                            continuous: true)
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
@@ -238,10 +246,10 @@ final class SelectionTrayView: NSView {
         let dark = isDarkMode
         if dark {
             backgroundCard.layer?.backgroundColor = NSColor(white: 0.22, alpha: 0.94).cgColor
-            backgroundCard.layer?.borderColor = NSColor.white.withAlphaComponent(0.24).cgColor
+            edgeStroke?.update(color: NSColor.white.withAlphaComponent(0.24))
         } else {
             backgroundCard.layer?.backgroundColor = NSColor(white: 0.98, alpha: 0.96).cgColor
-            backgroundCard.layer?.borderColor = NSColor.black.withAlphaComponent(0.12).cgColor
+            edgeStroke?.update(color: NSColor.black.withAlphaComponent(0.12))
         }
     }
 

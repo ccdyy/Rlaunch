@@ -139,6 +139,13 @@ final class BackgroundView: NSView {
     private var cachedBlurKey: String?
     private var cachedBlurredImage: NSImage?
 
+    /// 当前轮廓是否可由自家图层完全决定。
+    ///
+    /// 使用自定义背景图时，窗口形状完全由本视图的子层裁剪 → 可以用 `.continuous`
+    /// （与系统窗口一致的连续曲率）；毛玻璃模式下最外层是系统玻璃视图，其圆角只能是圆形，
+    /// 此时必须保持圆形，否则描边/裁剪会与系统视图的轮廓对不上。
+    var usesContinuousCorners: Bool { imageHolderView != nil }
+
     /// 切换窗口模式（窗口化 18 / 全屏 0）时同步圆角
     func setCornerRadius(_ radius: CGFloat) {
         guard abs(cornerRadius - radius) > 0.01 else { return }
@@ -284,13 +291,15 @@ final class BackgroundView: NSView {
     }
 
     private func applyCornerRadius() {
+        let continuous = usesContinuousCorners
         for view in subviews {
             if view === glassView {
                 SystemGlass.setCornerRadius(cornerRadius, on: view)
             } else {
                 view.wantsLayer = true
-                view.layer?.cornerRadius = cornerRadius
-                view.layer?.masksToBounds = cornerRadius > 0
+                view.layer?.applyRoundedCorner(radius: cornerRadius,
+                                               continuous: continuous,
+                                               masksToBounds: cornerRadius > 0)
             }
         }
     }

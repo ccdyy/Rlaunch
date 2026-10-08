@@ -6,34 +6,90 @@ import RlaunchCore
 
 // MARK: - 统一表单样式规范
 
-private enum FormMetrics {
-    /// 标签列宽：取「能放下最长英文标签」的固定值。
-    /// 不按语言动态变化——标签的宽度约束在构建时就固定了，就地切换语言时改不到，
-    /// 会导致英文被截断（如 "Launch at Log…"）；固定宽度还避免了切换时整片表单横向跳动。
-    static let labelWidth: CGFloat = 118
+/// 系统设置风格：分组圆角卡片 +「标题 / 副标题」行，控件右对齐。
+/// 说明文字收敛为一行副标题或 tooltip，避免整页都是大段文字。
+private enum SettingsMetrics {
+    static let cardCorner: CGFloat = 10
+    static let cardInsetH: CGFloat = 14        // 卡片内左右留白
+    static let cardRowMinHeight: CGFloat = 44
+    static let cardRowInsetV: CGFloat = 11
+    static let sectionSpacing: CGFloat = 22    // 分组之间的间距
+    static let sectionTitleGap: CGFloat = 7    // 分组标题与卡片之间
+    static let controlSpacing: CGFloat = 16    // 文字与控件之间
+    static let sliderWidth: CGFloat = 190
+    static let valueWidth: CGFloat = 52
+    static let sidebarWidth: CGFloat = 140
+    static let contentWidth: CGFloat = 496     // 卡片宽度（与内容列宽对齐）
 
-    static let controlSpacing: CGFloat = 12      // 标签与控件间距
-    static let sliderWidth: CGFloat = 210        // 滑块统一定宽
-    static let valueWidth: CGFloat = 46          // 数值展示标签统一定宽
-    static let controlAreaWidth: CGFloat = sliderWidth + controlSpacing + valueWidth // 268pt 控件标准总宽度
-    static let rowSpacing: CGFloat = 12          // 控件行间距
-    static let sectionSpacing: CGFloat = 18      // 分组垂直间距
+    /// 副标题文字颜色：在毛玻璃上比系统 secondary 略亮一档，保证可读性。
+    /// 用动态色（按外观解析）而不是固定色，切换明亮/深黑时会自动跟着变。
+    static let secondaryTextColor = NSColor(name: "rlaunchSettingsSecondary") { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark
+            ? NSColor.white.withAlphaComponent(0.68)
+            : NSColor.black.withAlphaComponent(0.62)
+    }
 }
 
-/// 表单标签。
-///
-/// 左对齐而非右对齐：右对齐时标签的左边缘参差不齐，又和分组标题各占一个缩进层级，
-/// 整页看起来像"两层楼"。左对齐后「分组标题」与「行标签」共用同一条左边界，
-/// 右侧控件（含说明）共用第二条边界，视觉上只剩干净的两列。
-fileprivate func makeFormLabel(_ text: String) -> NSTextField {
-    let l = NSTextField(labelWithString: text)
-    l.font = .systemFont(ofSize: 13, weight: .regular)
-    l.textColor = .secondaryLabelColor
-    l.alignment = .left
-    l.widthAnchor.constraint(equalToConstant: FormMetrics.labelWidth).isActive = true
-    l.setContentHuggingPriority(.required, for: .horizontal)
-    l.setContentCompressionResistancePriority(.required, for: .horizontal)
-    return l
+/// 设置窗口玻璃之上的自适应底色：深色压暗、浅色提亮，保证正文与卡片在任意桌面背景下都清晰。
+/// 用自绘 + effectiveAppearance，主题切换（含「跟随系统」）时自动重解析，无需外部同步。
+final class SettingsBackdropTintView: NSView {
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        layer?.backgroundColor = isDark
+            ? NSColor.black.withAlphaComponent(0.30).cgColor
+            : NSColor.white.withAlphaComponent(0.44).cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+/// 分组卡片：随明暗主题自适应的圆角背景（无需 NSBox 分隔线）
+final class SettingsCardView: NSView {
+    private var edgeStroke: EdgeStrokeView?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        // 连续曲率圆角 + 自身 1px 描边：卡片内容（stack）是子层，会盖住 border，
+        // 因此描边由 makeCard 在最上层安装的 EdgeStrokeView 负责，这里只保留底色。
+        layer?.cornerRadius = SettingsMetrics.cardCorner
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 0
+        layer?.backgroundColor = dark
+            ? NSColor.white.withAlphaComponent(0.07).cgColor
+            : NSColor.white.withAlphaComponent(0.62).cgColor
+        layer?.borderColor = dark
+            ? NSColor.white.withAlphaComponent(0.09).cgColor
+            : NSColor.black.withAlphaComponent(0.06).cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    /// 卡片描边：卡片宽度由约束固定，`.width/.height` 自适应即可跟随尺寸
+    func installEdgeStroke() {
+        guard edgeStroke == nil else { return }
+        edgeStroke = EdgeStrokeView.install(on: self,
+                                            cornerRadius: SettingsMetrics.cardCorner,
+                                            width: 1,
+                                            continuous: true)
+    }
 }
 
 fileprivate func makeValueLabel() -> NSTextField {
@@ -41,36 +97,209 @@ fileprivate func makeValueLabel() -> NSTextField {
     l.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
     l.textColor = .secondaryLabelColor
     l.alignment = .right
-    l.widthAnchor.constraint(equalToConstant: FormMetrics.valueWidth).isActive = true
+    l.translatesAutoresizingMaskIntoConstraints = false
+    l.widthAnchor.constraint(equalToConstant: SettingsMetrics.valueWidth).isActive = true
     return l
 }
 
-fileprivate func makeSectionHeader(_ title: String, isFirst: Bool = false) -> NSView {
-    let container = NSStackView()
-    container.orientation = .vertical
-    container.spacing = 8
-    container.alignment = .leading
-
-    if !isFirst {
-        // 分隔线上方留白，让分组之间有明确呼吸感，而不是紧贴上一行
-        let gap = NSView()
-        gap.translatesAutoresizingMaskIntoConstraints = false
-        gap.heightAnchor.constraint(equalToConstant: FormMetrics.sectionSpacing).isActive = true
-        container.addArrangedSubview(gap)
-
-        let line = NSBox()
-        line.boxType = .separator
-        line.translatesAutoresizingMaskIntoConstraints = false
-        line.widthAnchor.constraint(equalToConstant: FormMetrics.labelWidth + FormMetrics.controlSpacing + FormMetrics.controlAreaWidth).isActive = true
-        container.addArrangedSubview(line)
-    }
-
+/// 分组标题：小号次级文字，左对齐到卡片内容缩进
+fileprivate func makeSectionTitle(_ title: String, isFirst: Bool = false) -> NSView {
+    let holder = NSView()
+    holder.translatesAutoresizingMaskIntoConstraints = false
     let label = NSTextField(labelWithString: title)
     label.font = .systemFont(ofSize: 11, weight: .semibold)
-    label.textColor = .tertiaryLabelColor
-    container.addArrangedSubview(label)
+    label.textColor = .secondaryLabelColor
+    label.translatesAutoresizingMaskIntoConstraints = false
+    holder.addSubview(label)
+    NSLayoutConstraint.activate([
+        label.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: SettingsMetrics.cardInsetH),
+        label.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -SettingsMetrics.cardInsetH),
+        label.topAnchor.constraint(equalTo: holder.topAnchor, constant: isFirst ? 0 : SettingsMetrics.sectionSpacing),
+        label.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
+    ])
+    return holder
+}
 
-    return container
+/// 卡内分隔线：左右与卡片内容对齐
+fileprivate func makeCardSeparator() -> NSView {
+    let holder = NSView()
+    holder.translatesAutoresizingMaskIntoConstraints = false
+    // 1 物理像素 + 系统 separatorColor：与原生列表分隔线一致，不会显得突兀
+    let line = HairlineView()
+    holder.addSubview(line)
+    NSLayoutConstraint.activate([
+        line.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: SettingsMetrics.cardInsetH),
+        line.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -SettingsMetrics.cardInsetH),
+        line.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
+        holder.heightAnchor.constraint(equalToConstant: 1.0 / max(NSScreen.main?.backingScaleFactor ?? 2, 1)),
+    ])
+    return holder
+}
+
+/// 一行设置：左「图标? + 标题（+ 副标题）」，右控件
+fileprivate func makeRow(_ title: String?,
+                         icon: NSImage? = nil,
+                         subtitle: String? = nil,
+                         subtitleLabel: NSTextField? = nil,
+                         subtitleColor: NSColor = .secondaryLabelColor,
+                         tooltip: String? = nil,
+                         control: NSView? = nil) -> NSView {
+    let row = NSView()
+    row.translatesAutoresizingMaskIntoConstraints = false
+    row.toolTip = tooltip
+
+    let textStack = NSStackView()
+    textStack.orientation = .vertical
+    textStack.alignment = .leading
+    textStack.spacing = 2
+
+    if let title, !title.isEmpty {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 13)
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textStack.addArrangedSubview(titleLabel)
+    }
+
+    var sub = subtitleLabel
+    if sub == nil, let subtitle, !subtitle.isEmpty {
+        let label = NSTextField(labelWithString: subtitle)
+        label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        sub = label
+    }
+    if let sub {
+        sub.font = .systemFont(ofSize: 11)
+        // 比系统 secondaryLabelColor 略提一档：设置窗口是毛玻璃，纯 secondary 会偏灰看不清
+        sub.textColor = subtitleColor == .secondaryLabelColor ? SettingsMetrics.secondaryTextColor : subtitleColor
+        sub.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textStack.addArrangedSubview(sub)
+    }
+
+    // 左侧整体（可选图标 + 文案）
+    let leadingStack = NSStackView()
+    leadingStack.orientation = .horizontal
+    leadingStack.alignment = .centerY
+    leadingStack.spacing = 9
+    if let icon {
+        let iconView = NSImageView()
+        iconView.image = icon
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        iconView.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+        leadingStack.addArrangedSubview(iconView)
+    }
+    leadingStack.addArrangedSubview(textStack)
+    leadingStack.translatesAutoresizingMaskIntoConstraints = false
+    row.addSubview(leadingStack)
+
+    var constraints: [NSLayoutConstraint] = [
+        leadingStack.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: SettingsMetrics.cardInsetH),
+        leadingStack.topAnchor.constraint(equalTo: row.topAnchor, constant: SettingsMetrics.cardRowInsetV),
+        row.bottomAnchor.constraint(equalTo: leadingStack.bottomAnchor, constant: SettingsMetrics.cardRowInsetV),
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: SettingsMetrics.cardRowMinHeight),
+    ]
+
+    if let control {
+        control.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(control)
+        constraints += [
+            control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -SettingsMetrics.cardInsetH),
+            control.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            control.leadingAnchor.constraint(greaterThanOrEqualTo: leadingStack.trailingAnchor,
+                                             constant: SettingsMetrics.controlSpacing),
+        ]
+    } else {
+        constraints.append(leadingStack.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor,
+                                                                 constant: -SettingsMetrics.cardInsetH))
+    }
+    NSLayoutConstraint.activate(constraints)
+    return row
+}
+
+/// 滑块行：统一滑块宽度并对齐右侧数值
+fileprivate func makeSliderRow(_ title: String,
+                               subtitle: String? = nil,
+                               slider: NSSlider,
+                               valueLabel: NSTextField) -> NSView {
+    slider.translatesAutoresizingMaskIntoConstraints = false
+    slider.widthAnchor.constraint(equalToConstant: SettingsMetrics.sliderWidth).isActive = true
+    return makeRow(title, subtitle: subtitle, control: makeControlGroup([slider, valueLabel], spacing: 10))
+}
+
+/// 右对齐的控件组
+fileprivate func makeControlGroup(_ views: [NSView], spacing: CGFloat = 8) -> NSStackView {
+    let stack = NSStackView(views: views)
+    stack.orientation = .horizontal
+    stack.spacing = spacing
+    stack.alignment = .centerY
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    return stack
+}
+
+/// 分组下方的单行说明（尽量少用；细节说明优先放 tooltip）
+fileprivate func makeFootnote(_ text: String,
+                              tooltip: String? = nil,
+                              label: NSTextField? = nil) -> NSView {
+    let holder = NSView()
+    holder.translatesAutoresizingMaskIntoConstraints = false
+    holder.toolTip = tooltip
+    let field = label ?? NSTextField(wrappingLabelWithString: text)
+    if label == nil { field.stringValue = text }
+    field.font = .systemFont(ofSize: 11)
+    field.textColor = .tertiaryLabelColor
+    field.preferredMaxLayoutWidth = SettingsMetrics.contentWidth - SettingsMetrics.cardInsetH * 2
+    field.translatesAutoresizingMaskIntoConstraints = false
+    holder.addSubview(field)
+    NSLayoutConstraint.activate([
+        field.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: SettingsMetrics.cardInsetH),
+        field.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -SettingsMetrics.cardInsetH),
+        field.topAnchor.constraint(equalTo: holder.topAnchor, constant: 7),
+        field.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
+    ])
+    return holder
+}
+
+/// 把行组装成一张分组卡片
+fileprivate func makeCard(_ rows: [NSView]) -> NSView {
+    let card = SettingsCardView()
+    card.translatesAutoresizingMaskIntoConstraints = false
+    let stack = NSStackView()
+    stack.orientation = .vertical
+    stack.spacing = 0
+    stack.alignment = .width
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    for (i, row) in rows.enumerated() {
+        if i > 0 { stack.addArrangedSubview(makeCardSeparator()) }
+        stack.addArrangedSubview(row)
+    }
+    card.addSubview(stack)
+    NSLayoutConstraint.activate([
+        stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+        stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+        stack.topAnchor.constraint(equalTo: card.topAnchor),
+        stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        card.widthAnchor.constraint(equalToConstant: SettingsMetrics.contentWidth),
+    ])
+    // 描边必须最后安装：它自身没有子层，border 才不会被行内容盖住
+    card.installEdgeStroke()
+    return card
+}
+
+/// 让 child 撑满 host（用于动态重建的卡片容器）
+fileprivate func addFilling(_ child: NSView, to host: NSView) {
+    child.translatesAutoresizingMaskIntoConstraints = false
+    host.addSubview(child)
+    NSLayoutConstraint.activate([
+        child.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+        child.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+        child.topAnchor.constraint(equalTo: host.topAnchor),
+        child.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+    ])
 }
 
 /// 统一风格的数字步进输入框：左侧可输入/展示数值 + 右侧紧密贴合的 NSStepper
@@ -435,6 +664,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     var onRescan: (() -> Void)?
 
+    /// 与 SystemGlass.makeContainer 保持一致的窗口圆角
+    private static let windowCornerRadius: CGFloat = 14
+
     private var config = ConfigStore.load()
     private var saveDebounce: Timer?
     private var keyMonitor: Any?
@@ -448,8 +680,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         labels: [L10n.t("明亮"), L10n.t("深黑"), L10n.t("跟随系统")], trackingMode: .selectOne, target: nil, action: nil)
     private var darkPaletteView: PresetPaletteView!
     private var lightPaletteView: PresetPaletteView!
-    private var darkPaletteRow: NSStackView?
-    private var lightPaletteRow: NSStackView?
+    /// 背景颜色卡片的容器（按当前主题重建，避免残留分隔线）
+    private let paletteCardHost = NSView()
+    private var paletteShowingDark: Bool?
     private let bgPathLabel = NSTextField(labelWithString: L10n.t("默认（系统毛玻璃）"))
     private let chooseBgButton = NSButton(title: L10n.t("选择图片…"), target: nil, action: nil)
     private let clearBgButton = NSButton(title: L10n.t("清除"), target: nil, action: nil)
@@ -457,7 +690,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let opacityValue = makeValueLabel()
     private let blurSlider = NSSlider(value: 0, minValue: 0, maxValue: 60, target: nil, action: nil)
     private let blurValue = makeValueLabel()
-    private let blurHintLabel = NSTextField(labelWithString: "")
 
     // 网格
     private let columnsStepper: NSStepper = makeStepper(value: 7, min: 3, max: 10)
@@ -474,11 +706,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let iconSizeValue = makeValueLabel()
 
     // 应用扫描
-    private let scanPathsContainer = NSView()
-    private let scanRowsStack = NSStackView()
+    private let scanListHost = NSView()
+    private let hiddenListHost = NSView()
     private let addPathButton = NSButton(title: L10n.t("添加目录…"), target: nil, action: nil)
-    private let hiddenPathsContainer = NSView()
-    private let hiddenRowsStack = NSStackView()
     private let depthStepper: NSStepper = makeStepper(value: 3, min: 1, max: 6)
     private var depthBox: NumberStepperBox!
     private let rescanButtonScanTab = NSButton(title: L10n.t("立即重新扫描"), target: nil, action: nil)
@@ -486,18 +716,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     // 快捷键与手势
     private let hotKeySwitch = NSSwitch()
-    private let hotKeySwitchLabel = NSTextField(labelWithString: L10n.t("启用全局快捷键唤起"))
     private let hotKeyBadge = NSView()
     private let hotKeyLabel = NSTextField(labelWithString: L10n.t("未设置"))
     private let recordButton = NSButton(title: L10n.t("录制快捷键…"), target: nil, action: nil)
     private let clearShortcutButton = NSButton(title: L10n.t("清除"), target: nil, action: nil)
-    private let hotKeyControlRow = NSStackView()
 
     private let pinchSwitch = NSSwitch()
-    private let pinchSwitchLabel = NSTextField(labelWithString: L10n.t("四指/五指捏合：打开并全屏"))
     private let pinchSlider = NSSlider(value: 0.7, minValue: 0.3, maxValue: 2.0, target: nil, action: nil)
     private let pinchValue = makeValueLabel()
-    private let pinchControlRow = NSStackView()
 
     private let axStatusLabel = NSTextField(labelWithString: L10n.t("辅助功能：未授权"))
     private let axButton = NSButton(title: L10n.t("打开权限设置…"), target: nil, action: nil)
@@ -507,7 +733,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let languageControl = NSSegmentedControl(
         labels: AppLanguage.allCases.map { $0.displayName }, trackingMode: .selectOne, target: nil, action: nil)
     private let launchAtLoginSwitch = NSSwitch()
-    private let launchAtLoginLabel = NSTextField(labelWithString: L10n.t("登录时自动启动 Rlaunch"))
     private let launchAtLoginStatus = NSTextField(labelWithString: "")
     private let rescanButtonGeneralTab = NSButton(title: L10n.t("重新扫描应用"), target: nil, action: nil)
     private let rescanStatusGeneralTab = NSTextField(labelWithString: "")
@@ -523,12 +748,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var isConfirmingLayoutReset = false
 
     // 关于
-    private let appNameLabel = NSTextField(labelWithString: "Rlaunch")
     private let githubLinkButton = LinkButton(url: AppVersion.repositoryURL)
     private let copyRepoButton = NSButton(title: L10n.t("复制地址"), target: nil, action: nil)
     private let copyRepoFeedback = NSTextField(labelWithString: "")
 
     // 窗口元素
+    private var windowEdgeStroke: EdgeStrokeView?
+    /// 玻璃之上的自适应底色：保证文字/卡片在任意桌面背景下都有稳定对比度
+    private let contentTint = SettingsBackdropTintView()
     private var scrollView: NSScrollView!
     private var containerView: NSView!
     /// 背景玻璃视图（铺满窗口）与其内容承载视图
@@ -546,47 +773,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - 布局与对齐核心辅助
 
-    /// 创建统一对齐的标准表单行：[固定宽标签] + [控件] + (可选后置内容)
-    private func formRow(label: String, control: NSView, trailing: NSView? = nil) -> NSStackView {
-        let lbl = makeFormLabel(label)
-        var views: [NSView] = [lbl, control]
-        if let trailing { views.append(trailing) }
-        let s = NSStackView(views: views)
-        s.orientation = .horizontal
-        s.spacing = FormMetrics.controlSpacing
-        s.alignment = .centerY
-        return s
-    }
-
-    /// 滑块行：统一滑块宽度并对齐右侧数值展示
-    private func sliderRow(label: String, slider: NSSlider, valueLabel: NSTextField) -> NSStackView {
-        slider.widthAnchor.constraint(equalToConstant: FormMetrics.sliderWidth).isActive = true
-        return formRow(label: label, control: slider, trailing: valueLabel)
-    }
-
     private static var rendererHintText: String {
         L10n.f("当前背景渲染方式：%@。", L10n.t(SystemGlass.rendererName))
-    }
-
-    /// 说明提示行：左侧自动留出标签列的宽度，确保提示内容与右侧控件列绝对对齐
-    private func formHintRow(_ text: String, textColor: NSColor = .secondaryLabelColor) -> NSStackView {
-        let hint = NSTextField(wrappingLabelWithString: text)
-        hint.font = .systemFont(ofSize: 11)
-        hint.textColor = textColor
-        hint.preferredMaxLayoutWidth = FormMetrics.controlAreaWidth
-        return formHintRow(hint)
-    }
-
-    private func formHintRow(_ hint: NSTextField) -> NSStackView {
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.widthAnchor.constraint(equalToConstant: FormMetrics.labelWidth).isActive = true
-
-        let s = NSStackView(views: [spacer, hint])
-        s.orientation = .horizontal
-        s.spacing = FormMetrics.controlSpacing
-        s.alignment = .firstBaseline
-        return s
     }
 
     /// 统一布局计算
@@ -595,9 +783,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
               let glassView, let contentHost else { return }
         // 原生玻璃的内容由 contentView 承载，需显式与玻璃视图对齐
         contentHost.frame = glassView.bounds
+        contentTint.frame = contentHost.bounds
+        windowEdgeStroke?.frame = glassView.bounds
         let area = glassView.bounds
-        let width = max(area.width, 540)
-        let height = max(area.height, 420)
+        let width = max(area.width, 640)
+        let height = max(area.height, 480)
 
         // 顶部标题栏（把手 + 标题 + 右上角关闭按钮）
         headerView.frame = NSRect(x: 0, y: height - 52, width: width, height: 52)
@@ -616,8 +806,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let bodyTop: CGFloat = 52
         let bodyH = height - bodyTop
         let contentH_ = max(bodyH - 24, 0)
-        tabBarView.frame = NSRect(x: 16, y: 14, width: 126, height: contentH_)
-        let scrollX: CGFloat = 16 + 126 + 14
+        tabBarView.frame = NSRect(x: 16, y: 14, width: SettingsMetrics.sidebarWidth, height: contentH_)
+        let scrollX: CGFloat = 16 + SettingsMetrics.sidebarWidth + 16
         scrollView.frame = NSRect(x: scrollX, y: 14,
                                   width: max(width - scrollX - 16, 0), height: contentH_)
 
@@ -631,24 +821,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             y -= btnGap
         }
 
-        // 当前页内容高度与对齐
+        // 当前页内容高度与对齐（先定宽度再取高度：卡片高度依赖固定列宽）
         guard currentTab < contentPages.count, currentTab < contentStacks.count else { return }
         let page = contentPages[currentTab]
         let stack = contentStacks[currentTab]
         let pageW = max(scrollView.frame.width, 320)
+        let stackW = pageW - 8
+        stack.frame = NSRect(x: 4, y: 0, width: stackW, height: 10)
         stack.layoutSubtreeIfNeeded()
-        let contentH = max(stack.fittingSize.height + 16, scrollView.bounds.height)
-        stack.frame = NSRect(x: 4, y: contentH - stack.fittingSize.height - 8,
-                             width: pageW - 8, height: stack.fittingSize.height)
+        let stackH = stack.fittingSize.height
+        let contentH = max(stackH + 24, scrollView.bounds.height)
         page.frame = NSRect(x: 0, y: 0, width: pageW, height: contentH)
         containerView.frame = NSRect(x: 0, y: 0, width: pageW, height: contentH)
+        stack.frame = NSRect(x: 4, y: contentH - stackH - 12, width: stackW, height: stackH)
     }
 
     // MARK: - 初始化
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 630, height: 530),
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 600),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -667,7 +859,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = drag
 
         // 背景玻璃：macOS 26+ 用原生 Liquid Glass，更早系统回退到 NSVisualEffectView(.popover)
-        let (glassView, contentHost) = SystemGlass.makeContainer(cornerRadius: 14, material: .popover)
+        let (glassView, contentHost) = SystemGlass.makeContainer(cornerRadius: Self.windowCornerRadius, material: .popover)
         glassView.autoresizingMask = [.width, .height]
         glassView.frame = drag.bounds
         drag.addSubview(glassView)
@@ -676,6 +868,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         contentHost.frame = glassView.bounds
         self.glassView = glassView
         self.contentHost = contentHost
+
+        // 窗口最外圈描边：设置窗口轮廓由系统玻璃视图裁剪（圆角只能为圆形），用圆形描边贴合
+        windowEdgeStroke = EdgeStrokeView.install(on: drag,
+                                                  cornerRadius: Self.windowCornerRadius,
+                                                  width: nil,
+                                                  continuous: false)
+
+        // 自适应底色（最先添加 → 位于 Tab 栏与内容之下）
+        contentHost.addSubview(contentTint)
 
         // 左侧 Tab 栏
         let tabBar = NSView()
@@ -744,6 +945,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         buildTabsAndPages()
         refreshValues()
+        updateContentTint()
         layoutContent()
 
         NotificationCenter.default.addObserver(
@@ -774,6 +976,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Tab 构建
 
     private func buildTabsAndPages() {
+        configureControls()
+
         // 标签顺序：通用置顶，「关于」独立成页放在最后
         let titles = [L10n.t("通用"), L10n.t("外观"), L10n.t("网格"),
                       L10n.t("应用扫描"), L10n.t("快捷键"), L10n.t("关于")]
@@ -788,7 +992,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             let stack = NSStackView()
             stack.orientation = .vertical
             stack.alignment = .leading
-            stack.spacing = FormMetrics.rowSpacing
+            stack.spacing = SettingsMetrics.sectionTitleGap
             page.addSubview(stack)
             contentPages.append(page)
             contentStacks.append(stack)
@@ -815,170 +1019,175 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         selectTab(0)
     }
 
-    // MARK: 1. 外观设置
-    private func buildAppearancePage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("界面样式"), isFirst: true))
-        stack.addArrangedSubview(formRow(label: L10n.t("主题模式"), control: themeControl))
 
-        let darkRow = formRow(label: L10n.t("背景颜色"), control: darkPaletteView)
-        let lightRow = formRow(label: L10n.t("背景颜色"), control: lightPaletteView)
-        darkPaletteRow = darkRow
-        lightPaletteRow = lightRow
-        stack.addArrangedSubview(darkRow)
-        stack.addArrangedSubview(lightRow)
 
-        // 背景图控件组
-        bgPathLabel.lineBreakMode = .byTruncatingMiddle
-        bgPathLabel.font = .systemFont(ofSize: 12)
-        bgPathLabel.textColor = .labelColor
-        bgPathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        bgPathLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 140).isActive = true
+    /// 统一按钮样式与事件绑定（页面构建只负责排版，不再各写一份）
+    private func configureControls() {
+        let buttons: [(NSButton, Selector)] = [
+            (chooseBgButton, #selector(chooseBackground)),
+            (clearBgButton, #selector(clearBackground)),
+            (addPathButton, #selector(addScanPath)),
+            (rescanButtonScanTab, #selector(rescanClicked)),
+            (rescanButtonGeneralTab, #selector(rescanClicked)),
+            (recordButton, #selector(recordShortcut)),
+            (clearShortcutButton, #selector(clearShortcut)),
+            (axButton, #selector(openAccessibilitySettings)),
+            (trackpadButton, #selector(openTrackpadSettings)),
+            (openConfigButton, #selector(openConfigFolder)),
+            (exportConfigButton, #selector(exportConfig)),
+            (importConfigButton, #selector(importConfig)),
+            (resetButton, #selector(resetClicked)),
+            (resetLayoutButton, #selector(resetLayoutClicked)),
+            (copyRepoButton, #selector(copyRepositoryURL)),
+        ]
+        for (button, action) in buttons {
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.target = self
+            button.action = action
+            button.translatesAutoresizingMaskIntoConstraints = false
+        }
 
-        chooseBgButton.bezelStyle = .rounded
-        chooseBgButton.controlSize = .small
-        chooseBgButton.target = self
-        chooseBgButton.action = #selector(chooseBackground)
+        for toggle in [hotKeySwitch, pinchSwitch, launchAtLoginSwitch] {
+            toggle.controlSize = .small
+        }
+        launchAtLoginSwitch.target = self
+        launchAtLoginSwitch.action = #selector(launchAtLoginChanged)
 
-        clearBgButton.bezelStyle = .rounded
-        clearBgButton.controlSize = .small
-        clearBgButton.target = self
-        clearBgButton.action = #selector(clearBackground)
+        for control in [themeControl, languageControl] {
+            control.controlSize = .small
+        }
+        axStatusLabel.font = .systemFont(ofSize: 12, weight: .medium)
 
-        let bgControlRow = NSStackView(views: [bgPathLabel, chooseBgButton, clearBgButton])
-        bgControlRow.orientation = .horizontal
-        bgControlRow.spacing = 8
-        bgControlRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("背景图片"), control: bgControlRow))
-
-        // 背景效果
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("背景效果")))
-        stack.addArrangedSubview(sliderRow(label: L10n.t("透明度"), slider: opacitySlider, valueLabel: opacityValue))
-        stack.addArrangedSubview(sliderRow(label: L10n.t("模糊程度"), slider: blurSlider, valueLabel: blurValue))
-
-        blurHintLabel.font = .systemFont(ofSize: 11)
-        blurHintLabel.textColor = .tertiaryLabelColor
-        stack.addArrangedSubview(formHintRow(L10n.t("提示：高斯模糊仅在使用自定义背景图片时生效。")))
-        let rendererHint = NSTextField(wrappingLabelWithString: Self.rendererHintText)
-        rendererHint.font = .systemFont(ofSize: 11)
-        rendererHint.textColor = .secondaryLabelColor
-        rendererHint.preferredMaxLayoutWidth = FormMetrics.controlAreaWidth
-        rendererHintLabel = rendererHint
-        stack.addArrangedSubview(formHintRow(rendererHint))
-    }
-
-    // MARK: 2. 网格设置
-    private func buildGridPage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("布局规格"), isFirst: true))
-        stack.addArrangedSubview(formRow(label: L10n.t("列数"), control: columnsBox))
-        stack.addArrangedSubview(formRow(label: L10n.t("行数"), control: rowsBox))
-
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("间距与尺寸")))
-        stack.addArrangedSubview(sliderRow(label: L10n.t("列间距"), slider: columnSpacingSlider, valueLabel: columnSpacingValue))
-        stack.addArrangedSubview(sliderRow(label: L10n.t("行间距"), slider: rowSpacingSlider, valueLabel: rowSpacingValue))
-        stack.addArrangedSubview(sliderRow(label: L10n.t("全屏缩放"), slider: fullscreenScaleSlider, valueLabel: fullscreenScaleValue))
-        stack.addArrangedSubview(sliderRow(label: L10n.t("图标大小"), slider: iconSizeSlider, valueLabel: iconSizeValue))
-    }
-
-    // MARK: 3. 应用扫描设置
-    private func buildScanPage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("扫描目录"), isFirst: true))
-
-        // 目录列表容器（卡片样式）
-        scanPathsContainer.wantsLayer = true
-        scanPathsContainer.layer?.cornerRadius = 8
-        scanPathsContainer.layer?.borderWidth = 1
-        scanPathsContainer.layer?.borderColor = NSColor.separatorColor.cgColor
-        scanPathsContainer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.35).cgColor
-        scanPathsContainer.translatesAutoresizingMaskIntoConstraints = false
-        scanPathsContainer.widthAnchor.constraint(equalToConstant: FormMetrics.controlAreaWidth).isActive = true
-
-        scanRowsStack.orientation = .vertical
-        scanRowsStack.spacing = 4
-        scanRowsStack.alignment = .leading
-        scanRowsStack.translatesAutoresizingMaskIntoConstraints = false
-        scanPathsContainer.addSubview(scanRowsStack)
-
-        NSLayoutConstraint.activate([
-            scanRowsStack.leadingAnchor.constraint(equalTo: scanPathsContainer.leadingAnchor, constant: 8),
-            scanRowsStack.trailingAnchor.constraint(equalTo: scanPathsContainer.trailingAnchor, constant: -8),
-            scanRowsStack.topAnchor.constraint(equalTo: scanPathsContainer.topAnchor, constant: 6),
-            scanRowsStack.bottomAnchor.constraint(equalTo: scanPathsContainer.bottomAnchor, constant: -6),
-        ])
-
-        stack.addArrangedSubview(formRow(label: L10n.t("目录列表"), control: scanPathsContainer))
-
-        // 添加目录按钮
-        addPathButton.bezelStyle = .rounded
-        addPathButton.controlSize = .small
-        addPathButton.target = self
-        addPathButton.action = #selector(addScanPath)
-        stack.addArrangedSubview(formRow(label: "", control: addPathButton))
-
-        // 递归层级
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("扫描参数与操作")))
-        stack.addArrangedSubview(formRow(label: L10n.t("递归层级"), control: depthBox))
-        stack.addArrangedSubview(formHintRow(L10n.t("搜索应用时的最大目录深度（建议保持为 3）。")))
-
-        // 重新扫描操作（整合至扫描面板）
-        rescanButtonScanTab.bezelStyle = .rounded
-        rescanButtonScanTab.target = self
-        rescanButtonScanTab.action = #selector(rescanClicked)
-
-        rescanStatusScanTab.font = .systemFont(ofSize: 12)
+        for status in [rescanStatusScanTab, rescanStatusGeneralTab, copyRepoFeedback, launchAtLoginStatus, resetStatusLabel] {
+            status.maximumNumberOfLines = 1
+            status.lineBreakMode = .byTruncatingTail
+            status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        rescanStatusScanTab.font = .systemFont(ofSize: 11)
+        rescanStatusGeneralTab.font = .systemFont(ofSize: 11)
         rescanStatusScanTab.textColor = .secondaryLabelColor
-
-        let scanActionRow = NSStackView(views: [rescanButtonScanTab, rescanStatusScanTab])
-        scanActionRow.orientation = .horizontal
-        scanActionRow.spacing = 10
-        scanActionRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("应用索引"), control: scanActionRow))
-
-        buildHiddenAppsSection(stack)
+        rescanStatusGeneralTab.textColor = .secondaryLabelColor
     }
 
-    // MARK: 3b. 已隐藏的应用
+    // MARK: 1. 通用设置
+    private func buildGeneralPage(_ stack: NSStackView) {
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("通用"), isFirst: true))
 
-    private func buildHiddenAppsSection(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("已隐藏的应用")))
+        launchAtLoginStatus.font = .systemFont(ofSize: 11)
+        launchAtLoginStatus.textColor = .secondaryLabelColor
+        launchAtLoginStatus.maximumNumberOfLines = 1
+        launchAtLoginStatus.lineBreakMode = .byTruncatingTail
 
-        hiddenPathsContainer.wantsLayer = true
-        hiddenPathsContainer.layer?.cornerRadius = 8
-        hiddenPathsContainer.layer?.borderWidth = 1
-        hiddenPathsContainer.layer?.borderColor = NSColor.separatorColor.cgColor
-        hiddenPathsContainer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.35).cgColor
-        hiddenPathsContainer.translatesAutoresizingMaskIntoConstraints = false
-        hiddenPathsContainer.widthAnchor.constraint(equalToConstant: FormMetrics.controlAreaWidth).isActive = true
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("界面语言"),
+                    subtitle: L10n.t("切换后立即生效，无需重启"),
+                    control: languageControl),
+            makeRow(L10n.t("开机启动"), subtitleLabel: launchAtLoginStatus, control: launchAtLoginSwitch),
+            makeRow(L10n.t("应用索引"),
+                    subtitle: L10n.t("每次打开界面都会自动增量更新"),
+                    control: makeControlGroup([rescanButtonGeneralTab, rescanStatusGeneralTab], spacing: 10)),
+        ]))
 
-        hiddenRowsStack.orientation = .vertical
-        hiddenRowsStack.spacing = 4
-        hiddenRowsStack.alignment = .leading
-        hiddenRowsStack.translatesAutoresizingMaskIntoConstraints = false
-        hiddenPathsContainer.addSubview(hiddenRowsStack)
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("配置文件")))
 
-        NSLayoutConstraint.activate([
-            hiddenRowsStack.leadingAnchor.constraint(equalTo: hiddenPathsContainer.leadingAnchor, constant: 8),
-            hiddenRowsStack.trailingAnchor.constraint(equalTo: hiddenPathsContainer.trailingAnchor, constant: -8),
-            hiddenRowsStack.topAnchor.constraint(equalTo: hiddenPathsContainer.topAnchor, constant: 6),
-            hiddenRowsStack.bottomAnchor.constraint(equalTo: hiddenPathsContainer.bottomAnchor, constant: -6),
-        ])
+        resetStatusLabel.font = .systemFont(ofSize: 11)
+        resetStatusLabel.textColor = .systemOrange
+        resetStatusLabel.maximumNumberOfLines = 1
+        resetStatusLabel.lineBreakMode = .byTruncatingTail
 
-        stack.addArrangedSubview(formRow(label: L10n.t("隐藏列表"), control: hiddenPathsContainer))
-        stack.addArrangedSubview(formHintRow(L10n.t("在启动台中右键应用选择「从启动台隐藏」后，可在这里恢复显示。")))
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("备份与迁移"),
+                    subtitle: L10n.t("包含文件夹与页面编排"),
+                    control: makeControlGroup([openConfigButton, exportConfigButton, importConfigButton])),
+            makeRow(L10n.t("重置"),
+                    subtitleLabel: resetStatusLabel,
+                    tooltip: L10n.t("恢复默认设置仅重置设置项；重置桌面布局仅清空文件夹与页面编排"),
+                    control: makeControlGroup([resetButton, resetLayoutButton])),
+        ]))
     }
 
-    // MARK: 4. 快捷键与手势设置
+    // MARK: 2. 外观设置
+    private func buildAppearancePage(_ stack: NSStackView) {
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("外观"), isFirst: true))
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("外观模式"), control: themeControl),
+        ]))
+
+        // 背景颜色：只展示当前生效主题对应的调色板（内容随主题重建，避免残留分隔线）
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("背景颜色")))
+        paletteCardHost.translatesAutoresizingMaskIntoConstraints = false
+        paletteCardHost.widthAnchor.constraint(equalToConstant: SettingsMetrics.contentWidth).isActive = true
+        stack.addArrangedSubview(paletteCardHost)
+        rebuildPaletteCard(force: true)
+
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("背景图片")))
+
+        bgPathLabel.font = .systemFont(ofSize: 11)
+        bgPathLabel.textColor = .secondaryLabelColor
+        bgPathLabel.lineBreakMode = .byTruncatingMiddle
+        bgPathLabel.maximumNumberOfLines = 1
+        bgPathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("图片"),
+                    subtitleLabel: bgPathLabel,
+                    control: makeControlGroup([chooseBgButton, clearBgButton])),
+            makeSliderRow(L10n.t("透明度"), slider: opacitySlider, valueLabel: opacityValue),
+            makeSliderRow(L10n.t("模糊程度"),
+                          subtitle: L10n.t("仅在使用自定义背景图片时生效"),
+                          slider: blurSlider,
+                          valueLabel: blurValue),
+        ]))
+
+        let rendererHint = NSTextField(wrappingLabelWithString: Self.rendererHintText)
+        rendererHintLabel = rendererHint
+        stack.addArrangedSubview(makeFootnote("", label: rendererHint))
+    }
+
+    // MARK: 3. 网格设置
+    private func buildGridPage(_ stack: NSStackView) {
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("布局规格"), isFirst: true))
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("列数"), control: columnsBox),
+            makeRow(L10n.t("行数"), control: rowsBox),
+            makeSliderRow(L10n.t("列间距"), slider: columnSpacingSlider, valueLabel: columnSpacingValue),
+            makeSliderRow(L10n.t("行间距"), slider: rowSpacingSlider, valueLabel: rowSpacingValue),
+            makeSliderRow(L10n.t("全屏缩放"), slider: fullscreenScaleSlider, valueLabel: fullscreenScaleValue),
+            makeSliderRow(L10n.t("图标大小"), slider: iconSizeSlider, valueLabel: iconSizeValue),
+        ]))
+        stack.addArrangedSubview(makeFootnote(L10n.t("窗口缩小时会自动收紧行数与图标尺寸，不会被顶栏遮挡。")))
+    }
+
+    // MARK: 4. 应用扫描设置
+    private func buildScanPage(_ stack: NSStackView) {
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("扫描目录"), isFirst: true))
+        scanListHost.translatesAutoresizingMaskIntoConstraints = false
+        scanListHost.widthAnchor.constraint(equalToConstant: SettingsMetrics.contentWidth).isActive = true
+        stack.addArrangedSubview(scanListHost)
+        stack.addArrangedSubview(makeFootnote(L10n.t("新增或移除应用后会自动更新索引，无需手动刷新。")))
+
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("扫描参数与操作")))
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("递归层级"),
+                    subtitle: L10n.t("搜索应用时的最大目录深度（建议 3）"),
+                    control: depthBox),
+            makeRow(L10n.t("应用索引"),
+                    control: makeControlGroup([rescanButtonScanTab, rescanStatusScanTab], spacing: 10)),
+        ]))
+
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("已隐藏的应用")))
+        hiddenListHost.translatesAutoresizingMaskIntoConstraints = false
+        hiddenListHost.widthAnchor.constraint(equalToConstant: SettingsMetrics.contentWidth).isActive = true
+        stack.addArrangedSubview(hiddenListHost)
+        stack.addArrangedSubview(makeFootnote(
+            L10n.t("在主界面右键应用选择「从启动台隐藏」后，可在这里恢复。")))
+    }
+
+    // MARK: 5. 快捷键与手势设置
     private func buildShortcutPage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("全局快捷键"), isFirst: true))
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("全局快捷键"), isFirst: true))
 
-        hotKeySwitch.controlSize = .small
-        hotKeySwitchLabel.font = .systemFont(ofSize: 13)
-        let hotKeyToggleRow = NSStackView(views: [hotKeySwitch, hotKeySwitchLabel])
-        hotKeyToggleRow.orientation = .horizontal
-        hotKeyToggleRow.spacing = 8
-        hotKeyToggleRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("全局唤起"), control: hotKeyToggleRow))
-
-        // 快捷键按键显示胶囊
         hotKeyBadge.wantsLayer = true
         hotKeyBadge.layer?.cornerRadius = 6
         hotKeyBadge.layer?.borderWidth = 1
@@ -999,157 +1208,44 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         hotKeyBadge.heightAnchor.constraint(equalToConstant: 26).isActive = true
         hotKeyBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
 
-        recordButton.bezelStyle = .rounded
-        recordButton.controlSize = .small
-        recordButton.target = self
-        recordButton.action = #selector(recordShortcut)
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("启用全局快捷键唤起"), control: hotKeySwitch),
+            makeRow(L10n.t("唤起快捷键"),
+                    control: makeControlGroup([hotKeyBadge, recordButton, clearShortcutButton])),
+        ]))
 
-        clearShortcutButton.bezelStyle = .rounded
-        clearShortcutButton.controlSize = .small
-        clearShortcutButton.target = self
-        clearShortcutButton.action = #selector(clearShortcut)
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("触控板手势")))
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("四指/五指捏合：打开并全屏"), control: pinchSwitch),
+            makeSliderRow(L10n.t("灵敏度"), slider: pinchSlider, valueLabel: pinchValue),
+        ]))
+        stack.addArrangedSubview(makeFootnote(
+            L10n.t("捏合识别需要「辅助功能」权限。"),
+            tooltip: L10n.t("手势说明：四指/五指捏合通过系统触摸点间距收缩算法识别（需要辅助功能权限）。若系统已授权仍无法使用，可在「辅助功能」中先移除 Rlaunch 再重新添加，并在「触控板手势设置」中检查是否被系统默认手势占用。")))
 
-        hotKeyControlRow.setViews([hotKeyBadge, recordButton, clearShortcutButton], in: .leading)
-        hotKeyControlRow.orientation = .horizontal
-        hotKeyControlRow.spacing = 8
-        hotKeyControlRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("唤起快捷键"), control: hotKeyControlRow))
-
-        // 触控板手势
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("触控板手势")))
-
-        pinchSwitch.controlSize = .small
-        pinchSwitchLabel.font = .systemFont(ofSize: 13)
-        let pinchToggleRow = NSStackView(views: [pinchSwitch, pinchSwitchLabel])
-        pinchToggleRow.orientation = .horizontal
-        pinchToggleRow.spacing = 8
-        pinchToggleRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("捏合唤起"), control: pinchToggleRow))
-
-        pinchSlider.widthAnchor.constraint(equalToConstant: FormMetrics.sliderWidth).isActive = true
-        pinchControlRow.setViews([pinchSlider, pinchValue], in: .leading)
-        pinchControlRow.orientation = .horizontal
-        pinchControlRow.spacing = FormMetrics.controlSpacing
-        pinchControlRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("灵敏度"), control: pinchControlRow))
-
-        // 权限与系统手势设置
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("系统权限与手势")))
-
-        axStatusLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        axButton.bezelStyle = .rounded
-        axButton.controlSize = .small
-        axButton.target = self
-        axButton.action = #selector(openAccessibilitySettings)
-        let axRow = NSStackView(views: [axStatusLabel, axButton])
-        axRow.orientation = .horizontal
-        axRow.spacing = 10
-        axRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("辅助功能"), control: axRow))
-
-        trackpadButton.bezelStyle = .rounded
-        trackpadButton.controlSize = .small
-        trackpadButton.target = self
-        trackpadButton.action = #selector(openTrackpadSettings)
-        stack.addArrangedSubview(formRow(label: L10n.t("触控板"), control: trackpadButton))
-
-        stack.addArrangedSubview(formHintRow(
-            L10n.t("手势说明：四指/五指捏合通过系统触摸点间距收缩算法识别（需要辅助功能权限）。若系统已授权仍无法使用，可在「辅助功能」中先移除 Rlaunch 再重新添加，并在「触控板手势设置」中检查是否被系统默认手势占用。")))
-    }
-
-    // MARK: 5. 通用设置
-    private func buildGeneralPage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("语言"), isFirst: true))
-        stack.addArrangedSubview(formRow(label: L10n.t("语言"), control: languageControl))
-        stack.addArrangedSubview(formHintRow(L10n.t("切换语言后界面立即生效，无需重启。")))
-
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("系统启动")))
-
-        launchAtLoginSwitch.controlSize = .small
-        launchAtLoginSwitch.target = self
-        launchAtLoginSwitch.action = #selector(launchAtLoginChanged)
-        launchAtLoginLabel.font = .systemFont(ofSize: 13)
-
-        let loginRow = NSStackView(views: [launchAtLoginSwitch, launchAtLoginLabel])
-        loginRow.orientation = .horizontal
-        loginRow.spacing = 8
-        loginRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("开机启动"), control: loginRow))
-
-        launchAtLoginStatus.font = .systemFont(ofSize: 11)
-        launchAtLoginStatus.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(formRow(label: "", control: launchAtLoginStatus))
-        stack.addArrangedSubview(formHintRow(L10n.t("可在「系统设置 → 通用 → 登录项与扩展」中管理。")))
-
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("应用维护")))
-
-        rescanButtonGeneralTab.bezelStyle = .rounded
-        rescanButtonGeneralTab.target = self
-        rescanButtonGeneralTab.action = #selector(rescanClicked)
-
-        rescanStatusGeneralTab.font = .systemFont(ofSize: 12)
-        rescanStatusGeneralTab.textColor = .secondaryLabelColor
-
-        let generalRescanRow = NSStackView(views: [rescanButtonGeneralTab, rescanStatusGeneralTab])
-        generalRescanRow.orientation = .horizontal
-        generalRescanRow.spacing = 10
-        generalRescanRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("应用索引"), control: generalRescanRow))
-
-        // 配置维护：打开配置目录 / 导出导入 / 恢复默认（二次点击确认，避免弹出会被全屏窗口遮挡的模态框）
-        for button in [openConfigButton, exportConfigButton, importConfigButton, resetButton, resetLayoutButton] {
-            button.bezelStyle = .rounded
-            button.controlSize = .small
-            button.target = self
-        }
-        openConfigButton.action = #selector(openConfigFolder)
-        exportConfigButton.action = #selector(exportConfig)
-        importConfigButton.action = #selector(importConfig)
-        resetButton.action = #selector(resetClicked)
-        resetLayoutButton.action = #selector(resetLayoutClicked)
-
-        let fileRow = NSStackView(views: [openConfigButton, exportConfigButton, importConfigButton])
-        fileRow.orientation = .horizontal
-        fileRow.spacing = 8
-        fileRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("配置文件"), control: fileRow))
-
-        resetStatusLabel.font = .systemFont(ofSize: 11)
-        resetStatusLabel.textColor = .systemOrange
-
-        let resetRow = NSStackView(views: [resetButton, resetLayoutButton, resetStatusLabel])
-        resetRow.orientation = .horizontal
-        resetRow.spacing = 8
-        resetRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: L10n.t("重置"), control: resetRow))
-
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("系统权限与手势")))
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("辅助功能"), control: makeControlGroup([axStatusLabel, axButton], spacing: 10)),
+            makeRow(L10n.t("触控板"), control: trackpadButton),
+        ]))
     }
 
     // MARK: 6. 关于（独立标签页）
     private func buildAboutPage(_ stack: NSStackView) {
-        stack.addArrangedSubview(makeSectionHeader(L10n.t("关于"), isFirst: true))
-
-        appNameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        appNameLabel.textColor = .labelColor
-        stack.addArrangedSubview(formRow(label: L10n.t("应用"), control: appNameLabel))
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("关于"), isFirst: true))
 
         githubLinkButton.toolTip = L10n.f("在浏览器中打开 %@", AppVersion.repositoryURL)
-
-        copyRepoButton.bezelStyle = .rounded
-        copyRepoButton.controlSize = .small
-        copyRepoButton.target = self
-        copyRepoButton.action = #selector(copyRepositoryURL)
-
         copyRepoFeedback.font = .systemFont(ofSize: 11)
         copyRepoFeedback.textColor = .systemGreen
+        copyRepoFeedback.maximumNumberOfLines = 1
 
-        let repoRow = NSStackView(views: [githubLinkButton, copyRepoButton, copyRepoFeedback])
-        repoRow.orientation = .horizontal
-        repoRow.spacing = 10
-        repoRow.alignment = .centerY
-        stack.addArrangedSubview(formRow(label: "GitHub", control: repoRow))
-
-        stack.addArrangedSubview(formHintRow(L10n.t("Rlaunch · 轻量高效的 macOS 启动台平替。点击 GitHub 地址可在浏览器中打开项目主页。")))
+        stack.addArrangedSubview(makeCard([
+            makeRow("Rlaunch", subtitle: AppVersion.displayFull, control: nil),
+            makeRow(L10n.t("项目主页"),
+                    control: makeControlGroup([githubLinkButton, copyRepoButton, copyRepoFeedback], spacing: 10)),
+        ]))
+        stack.addArrangedSubview(makeFootnote(
+            L10n.t("Rlaunch · 轻量高效的 macOS 启动台平替。点击 GitHub 地址可在浏览器中打开项目主页。")))
     }
 
     /// 切换 Tab：隐藏其他页、滚动回顶部
@@ -1258,22 +1354,46 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func themeDidChangeNotification() {
+        updateContentTint()
         updatePaletteVisibility()
         layoutContent()
     }
 
+    /// 玻璃之上的自适应底色由 SettingsBackdropTintView 自绘，这里只需让它重画
+    private func updateContentTint() {
+        contentTint.needsDisplay = true
+    }
+
     private func updatePaletteVisibility() {
-        let isEffectiveDark: Bool = {
-            switch config.theme {
-            case .dark: return true
-            case .light: return false
-            case .system:
-                return (window?.effectiveAppearance ?? NSApp.effectiveAppearance)
-                    .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            }
-        }()
-        darkPaletteRow?.isHidden = !isEffectiveDark
-        lightPaletteRow?.isHidden = isEffectiveDark
+        updateContentTint()
+        rebuildPaletteCard()
+    }
+
+    /// 当前生效的明暗（跟随系统时以窗口实际外观为准）
+    private func isEffectiveDark() -> Bool {
+        switch config.theme {
+        case .dark: return true
+        case .light: return false
+        case .system:
+            return (window?.effectiveAppearance ?? NSApp.effectiveAppearance)
+                .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        }
+    }
+
+    /// 背景颜色卡片：只保留当前主题对应的调色板，重建时不会残留多余分隔线
+    private func rebuildPaletteCard(force: Bool = false) {
+        let dark = isEffectiveDark()
+        if !force, paletteShowingDark == dark, !paletteCardHost.subviews.isEmpty { return }
+        paletteShowingDark = dark
+        paletteCardHost.subviews.forEach { $0.removeFromSuperview() }
+        let palette = dark ? darkPaletteView : lightPaletteView
+        let card = makeCard([
+            makeRow(L10n.t("背景颜色"),
+                    subtitle: L10n.t("点击色块即可切换背景"),
+                    control: palette),
+        ])
+        addFilling(card, to: paletteCardHost)
+        paletteCardHost.needsLayout = true
     }
 
     /// 与系统登录项状态同步（以系统状态为准）
@@ -1326,107 +1446,65 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func rebuildScanRows() {
-        scanRowsStack.arrangedSubviews.forEach {
-            scanRowsStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
+        scanListHost.subviews.forEach { $0.removeFromSuperview() }
+        var rows: [NSView] = []
 
         if config.scanPaths.isEmpty {
-            let emptyLabel = NSTextField(labelWithString: L10n.t("未配置扫描目录"))
-            emptyLabel.font = .systemFont(ofSize: 12)
-            emptyLabel.textColor = .tertiaryLabelColor
-            scanRowsStack.addArrangedSubview(emptyLabel)
+            rows.append(makeRow(L10n.t("未配置扫描目录"),
+                                subtitle: L10n.t("点击下方按钮添加要扫描的应用目录"),
+                                control: nil))
         } else {
-            for path in config.scanPaths {
-                let rowView = NSStackView()
-                rowView.orientation = .horizontal
-                rowView.spacing = 6
-                rowView.alignment = .centerY
-
-                let icon = NSImageView()
-                icon.image = NSWorkspace.shared.icon(forFile: NSString(string: path).expandingTildeInPath)
-                icon.imageScaling = .scaleProportionallyUpOrDown
-                icon.translatesAutoresizingMaskIntoConstraints = false
-                icon.widthAnchor.constraint(equalToConstant: 16).isActive = true
-                icon.heightAnchor.constraint(equalToConstant: 16).isActive = true
-
-                let label = NSTextField(labelWithString: path)
-                label.font = .systemFont(ofSize: 12)
-                label.lineBreakMode = .byTruncatingMiddle
-                label.textColor = .labelColor
-                label.setContentHuggingPriority(.defaultLow, for: .horizontal)
-                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
+            for (index, path) in config.scanPaths.enumerated() {
+                let expanded = NSString(string: path).expandingTildeInPath
                 let del = NSButton(title: "✕", target: self, action: #selector(removeScanPath(_:)))
                 del.isBordered = false
+                del.bezelStyle = .inline
                 del.font = .systemFont(ofSize: 10, weight: .bold)
                 del.contentTintColor = .secondaryLabelColor
-                del.bezelStyle = .inline
-                del.setContentHuggingPriority(.required, for: .horizontal)
-
-                rowView.addArrangedSubview(icon)
-                rowView.addArrangedSubview(label)
-                rowView.addArrangedSubview(del)
-                rowView.translatesAutoresizingMaskIntoConstraints = false
-                rowView.widthAnchor.constraint(equalToConstant: FormMetrics.controlAreaWidth - 16).isActive = true
-
-                scanRowsStack.addArrangedSubview(rowView)
+                del.toolTip = L10n.t("移除该目录")
+                del.tag = index
+                rows.append(makeRow((path as NSString).abbreviatingWithTildeInPath,
+                                    icon: NSWorkspace.shared.icon(forFile: expanded),
+                                    control: del))
             }
         }
+
+        // 最后一行放「添加目录…」按钮（右对齐）
+        rows.append(makeRow(nil, control: addPathButton))
+        addFilling(makeCard(rows), to: scanListHost)
         layoutContent()
     }
 
     /// 重建「已隐藏的应用」列表
     private func rebuildHiddenRows() {
-        hiddenRowsStack.arrangedSubviews.forEach {
-            hiddenRowsStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
+        hiddenListHost.subviews.forEach { $0.removeFromSuperview() }
+        var rows: [NSView] = []
 
         if config.hiddenAppPaths.isEmpty {
-            let emptyLabel = NSTextField(labelWithString: L10n.t("没有被隐藏的应用"))
-            emptyLabel.font = .systemFont(ofSize: 12)
-            emptyLabel.textColor = .tertiaryLabelColor
-            hiddenRowsStack.addArrangedSubview(emptyLabel)
+            rows.append(makeRow(L10n.t("没有被隐藏的应用"), control: nil))
         } else {
-            for path in config.hiddenAppPaths {
-                let rowView = NSStackView()
-                rowView.orientation = .horizontal
-                rowView.spacing = 6
-                rowView.alignment = .centerY
-
-                let icon = NSImageView()
-                icon.image = NSWorkspace.shared.icon(forFile: path)
-                icon.imageScaling = .scaleProportionallyUpOrDown
-                icon.translatesAutoresizingMaskIntoConstraints = false
-                icon.widthAnchor.constraint(equalToConstant: 16).isActive = true
-                icon.heightAnchor.constraint(equalToConstant: 16).isActive = true
-
-                let label = NSTextField(labelWithString: FileManager.default.displayName(atPath: path))
-                label.font = .systemFont(ofSize: 12)
-                label.lineBreakMode = .byTruncatingMiddle
-                label.textColor = .labelColor
-                label.toolTip = path
-                label.setContentHuggingPriority(.defaultLow, for: .horizontal)
-                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            for (index, path) in config.hiddenAppPaths.enumerated() {
+                let pathLabel = NSTextField(labelWithString: path)
+                pathLabel.maximumNumberOfLines = 1
+                pathLabel.lineBreakMode = .byTruncatingMiddle
 
                 let restore = NSButton(title: L10n.t("恢复"), target: self, action: #selector(restoreHiddenApp(_:)))
                 restore.bezelStyle = .inline
                 restore.isBordered = false
                 restore.font = .systemFont(ofSize: 11, weight: .medium)
                 restore.contentTintColor = .controlAccentColor
-                restore.setContentHuggingPriority(.required, for: .horizontal)
                 restore.toolTip = L10n.t("恢复显示")
+                restore.tag = index
 
-                rowView.addArrangedSubview(icon)
-                rowView.addArrangedSubview(label)
-                rowView.addArrangedSubview(restore)
-                rowView.translatesAutoresizingMaskIntoConstraints = false
-                rowView.widthAnchor.constraint(equalToConstant: FormMetrics.controlAreaWidth - 16).isActive = true
-
-                hiddenRowsStack.addArrangedSubview(rowView)
+                rows.append(makeRow(FileManager.default.displayName(atPath: path),
+                                    icon: NSWorkspace.shared.icon(forFile: path),
+                                    subtitleLabel: pathLabel,
+                                    tooltip: path,
+                                    control: restore))
             }
         }
+
+        addFilling(makeCard(rows), to: hiddenListHost)
         layoutContent()
     }
 
@@ -1583,18 +1661,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func removeScanPath(_ sender: NSButton) {
-        guard let rowView = sender.superview as? NSStackView,
-              let label = rowView.arrangedSubviews.first(where: { $0 is NSTextField }) as? NSTextField else { return }
-        config.scanPaths.removeAll { $0 == label.stringValue }
+        let index = sender.tag
+        guard index >= 0, index < config.scanPaths.count else { return }
+        config.scanPaths.remove(at: index)
         refreshValues()
         scheduleSave()
     }
 
     /// 恢复被隐藏的应用（交互元素在重建行时动态创建，故用菜单/按钮的 hover 行反查路径）
     @objc private func restoreHiddenApp(_ sender: NSButton) {
-        guard let rowView = sender.superview as? NSStackView,
-              let index = hiddenRowsStack.arrangedSubviews.firstIndex(of: rowView),
-              index < config.hiddenAppPaths.count else { return }
+        let index = sender.tag
+        guard index >= 0, index < config.hiddenAppPaths.count else { return }
         config.hiddenAppPaths.remove(at: index)
         refreshValues()
         scheduleSave()
