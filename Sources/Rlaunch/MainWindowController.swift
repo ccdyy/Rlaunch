@@ -576,18 +576,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 否则「分页认为放得下、布局却放不下」的条目会被裁掉或压到顶栏下面。
     /// 全屏时始终使用用户配置的规格。
     private func gridCapacity(forViewport viewport: NSSize) -> GridCapacity {
-        let configured = GridCapacity(columns: config.columns, rows: config.rows)
-        guard !isPseudoFullScreen else { return configured }
-        return GridMetrics.capacity(viewport: viewport, configured: configured)
+        // 全屏与窗口化一视同仁：容量都以**真实网格可视区**为准。
+        // 笔记本全屏时视口会被顶栏 + 刘海安全区 + 底栏吃掉 150pt 以上，用屏幕尺寸推算会溢出。
+        GridMetrics.capacity(viewport: viewport, configured: GridCapacity(columns: config.columns, rows: config.rows))
     }
 
     /// 按当前可视区域推算网格参数：全屏放大铺满；窗口化在容量范围内尽量使用配置的图标尺寸，
     /// 放不下时按比例收紧间距与图标，保证整页永远落在可视区内（不会被顶栏/底栏压住）。
     private func gridConfig(forViewport viewport: NSSize, capacity: GridCapacity) -> GridLayoutConfig {
-        if isPseudoFullScreen, let screen = window?.screen ?? NSScreen.main {
+        if isPseudoFullScreen {
             return GridMetrics.fullscreenConfig(
-                screenSize: screen.frame.size,
-                configured: GridCapacity(columns: config.columns, rows: config.rows),
+                viewport: viewport,
+                capacity: capacity,
                 preferredIconSize: CGFloat(config.iconSize),
                 columnSpacing: CGFloat(config.columnSpacing),
                 rowSpacing: CGFloat(config.rowSpacing),
@@ -1946,6 +1946,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             reloadData(keepPage: scrollView.currentPage)
         }
     }
+
 
 
 

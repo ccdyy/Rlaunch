@@ -617,12 +617,57 @@ func testGridMetrics() {
     check(cramped.iconSize >= GridMetrics.minIconSize, "间距自动收紧后图标不低于下限")
     check(cramped.gridPixelHeight <= 300.01, "间距收紧后依然不溢出")
 
-    // 全屏：图标按屏幕放大
+    // 全屏：图标按可视区放大
+    let fullViewport = CGSize(width: 1920, height: 1080 - 56 - 68)
     let full = GridMetrics.fullscreenConfig(
-        screenSize: CGSize(width: 1920, height: 1080), configured: configured,
+        viewport: fullViewport, capacity: GridMetrics.capacity(viewport: fullViewport, configured: configured),
         preferredIconSize: 64, columnSpacing: 24, rowSpacing: 24, spacingScale: 1.6)
     check(full.columns == 7 && full.rows == 5, "全屏使用配置的行列数")
     check(full.iconSize >= 64, "全屏时图标不小于配置尺寸")
+
+    // 回归：笔记本全屏时，网格必须落在**真实可视区**内。
+    // 之前用 NSScreen.frame 推算，把顶栏 56pt + 刘海安全区 + 底栏 68pt 全算进了可用高度，
+    // 导致网格比可视区高 20pt，首行图标被裁掉顶部——看起来就像被顶栏盖住。
+    let laptopScreens: [(name: String, width: CGFloat, height: CGFloat, safeTop: CGFloat, rows: Int)] = [
+        ("MacBook Air 13（刘海）", 1470, 956, 32, 5),
+        ("MacBook Pro 14（刘海）", 1512, 982, 32, 5),
+        ("MacBook Pro 16（刘海）", 1728, 1117, 32, 5),
+        ("MacBook Air 15", 1710, 1107, 0, 5),
+        ("Intel MBP 13", 1440, 900, 0, 5),
+        ("MacBook 12", 1280, 800, 0, 5),
+        ("外接 1080p", 1920, 1080, 0, 5),
+        ("大屏 6 行", 2560, 1440, 0, 6),
+        ("小屏 8 行", 1280, 800, 0, 8),
+    ]
+    var fullscreenOverflow: [String] = []
+    for screen in laptopScreens {
+        let viewport = CGSize(
+            width: screen.width,
+            height: screen.height - 56 - screen.safeTop - 68)   // 与 rootChromeLayout 一致
+        for scale in [CGFloat(1.0), 1.6, 2.5, 3.0] {
+            let capacity = GridMetrics.capacity(viewport: viewport,
+                                                configured: GridCapacity(columns: 8, rows: screen.rows))
+            let cfg = GridMetrics.fullscreenConfig(
+                viewport: viewport, capacity: capacity,
+                preferredIconSize: 74, columnSpacing: 24, rowSpacing: 24, spacingScale: scale)
+            if cfg.gridPixelHeight > viewport.height + 0.01 || cfg.gridPixelWidth > viewport.width + 0.01 {
+                fullscreenOverflow.append("\(screen.name)/×\(scale)")
+            }
+        }
+    }
+    check(fullscreenOverflow.isEmpty,
+          "全屏网格不超出可视区（含刘海屏与小屏）\(fullscreenOverflow.isEmpty ? "" : "：" + fullscreenOverflow.joined(separator: ", "))")
+
+    // 具体回归：13" 刘海屏 + 图标 74 + 全屏缩放 2.5（用户配置）应完整放下，且图标不明显缩水
+    let regViewport = CGSize(width: 1470, height: 956 - 56 - 32 - 68)
+    let regCfg = GridMetrics.fullscreenConfig(
+        viewport: regViewport,
+        capacity: GridMetrics.capacity(viewport: regViewport, configured: GridCapacity(columns: 8, rows: 5)),
+        preferredIconSize: 74, columnSpacing: 24, rowSpacing: 24, spacingScale: 2.5)
+    check(regCfg.gridPixelHeight <= regViewport.height + 0.01,
+          "13\" 刘海屏全屏：网格高度 \(Int(regCfg.gridPixelHeight)) ≤ 可视区 \(Int(regViewport.height))")
+    check(regCfg.iconSize >= 64,
+          "13\" 刘海屏全屏：图标仍有 \(Int(regCfg.iconSize))pt（靠收紧间距而非一味缩小图标）")
 
     // 布局像素计算自洽
     check(GridLayoutConfig.defaults.gridPixelWidth > 0 && GridLayoutConfig.defaults.gridPixelHeight > 0,

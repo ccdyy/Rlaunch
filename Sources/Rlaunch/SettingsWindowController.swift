@@ -1019,8 +1019,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         selectTab(0)
     }
 
-
-
     /// 统一按钮样式与事件绑定（页面构建只负责排版，不再各写一份）
     private func configureControls() {
         let buttons: [(NSButton, Selector)] = [

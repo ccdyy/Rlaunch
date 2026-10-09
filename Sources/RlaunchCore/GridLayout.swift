@@ -75,13 +75,54 @@ public enum GridMetrics {
         )
     }
 
-    /// 窗口化网格：容量范围内尽量用配置的图标尺寸，放不下时按比例收紧间距与图标。
+    /// 窗口化网格：容量范围内尽量用配置的图标尺寸，放不下时先收紧间距、再收图标。
     /// 返回结果保证 `gridPixelWidth <= viewport.width` 且 `gridPixelHeight <= viewport.height`。
     public static func windowedConfig(viewport: CGSize,
                                       capacity: GridCapacity,
                                       preferredIconSize: CGFloat,
                                       columnSpacing: CGFloat,
                                       rowSpacing: CGFloat) -> GridLayoutConfig {
+        fitted(viewport: viewport,
+               capacity: capacity,
+               preferredIconSize: preferredIconSize,
+               columnSpacing: columnSpacing,
+               rowSpacing: rowSpacing,
+               fill: CGSize(width: 1, height: 1),
+               growsToFill: false,
+               maxIconSize: 160)
+    }
+
+    /// 全屏网格：在**真实网格可视区**（已扣掉顶栏、刘海安全区与底栏）内把图标放大铺满。
+    ///
+    /// 这里必须用可视区而不是 `NSScreen.frame`：笔记本上顶栏 56pt + 刘海安全区 32pt +
+    /// 底栏 68pt 加起来有 156pt，用屏幕高度算会把网格算高，多出来的部分正好把首行图标
+    /// 顶到可视区之外——表现就是「顶栏盖住了应用」。
+    public static func fullscreenConfig(viewport: CGSize,
+                                        capacity: GridCapacity,
+                                        preferredIconSize: CGFloat,
+                                        columnSpacing: CGFloat,
+                                        rowSpacing: CGFloat,
+                                        spacingScale: CGFloat) -> GridLayoutConfig {
+        fitted(viewport: viewport,
+               capacity: capacity,
+               preferredIconSize: preferredIconSize,
+               columnSpacing: max(14, columnSpacing * spacingScale),
+               rowSpacing: max(14, rowSpacing * spacingScale),
+               fill: CGSize(width: 0.94, height: 0.92),
+               growsToFill: true,
+               maxIconSize: 160)
+    }
+
+    /// 统一推算：**永远以真实可视区为准**，先收紧间距（最多收到配置值的 60%），再收图标，
+    /// 最后按真实像素尺寸兜底校验，确保整页一定落在可视区内。
+    private static func fitted(viewport: CGSize,
+                               capacity: GridCapacity,
+                               preferredIconSize: CGFloat,
+                               columnSpacing: CGFloat,
+                               rowSpacing: CGFloat,
+                               fill: CGSize,
+                               growsToFill: Bool,
+                               maxIconSize: CGFloat) -> GridLayoutConfig {
         let columns = max(capacity.columns, 1)
         let rows = max(capacity.rows, 1)
         let cols = CGFloat(columns)
@@ -93,76 +134,61 @@ public enum GridMetrics {
                 columns: columns, rows: rows,
                 columnSpacing: max(minColumnSpacing, columnSpacing),
                 rowSpacing: max(minRowSpacing, rowSpacing),
-                iconSize: prefIcon
-            )
+                iconSize: prefIcon)
         }
 
-        let W = viewport.width
-        let H = viewport.height
+        let usableW = viewport.width * fill.width
+        let usableH = viewport.height * fill.height
 
+        // 标签高度随图标变化，迭代几轮即收敛
         func fittedIcon(_ colSpacing: CGFloat, _ rowSpacing: CGFloat) -> CGFloat {
-            // 用配置图标的标签高度估算（偏保守），随后再由像素尺寸校验兜底
-            let labelH = min(40, max(26, prefIcon * 0.28))
-            let iconForW = (W - (cols - 1) * colSpacing) / cols - 20
-            let iconForH = (H - (rowCount - 1) * rowSpacing) / rowCount - labelH - 16
-            return min(iconForW, iconForH)
+            var icon = prefIcon
+            for _ in 0..<4 {
+                let labelH = min(40, max(26, icon * 0.28))
+                let iconForW = (usableW - (cols - 1) * colSpacing) / cols - 20
+                let iconForH = (usableH - (rowCount - 1) * rowSpacing) / rowCount - labelH - 16
+                icon = min(iconForW, iconForH)
+            }
+            return icon
         }
 
         var colSpacing = max(minColumnSpacing, columnSpacing)
         var rowSpacing = max(minRowSpacing, rowSpacing)
         var fit = fittedIcon(colSpacing, rowSpacing)
-        if fit < minIconSize {
-            // 逐步收紧间距，直到能放下最小图标为止
-            for step in stride(from: 0.9, through: 0.1, by: -0.1) {
+
+        // 先收紧间距（下限：配置值的 60% 与最小间距取大），尽量保住用户配置的图标尺寸
+        if fit < prefIcon {
+            for step in stride(from: 0.9, through: 0.61, by: -0.1) {
                 let candidateCol = max(minColumnSpacing, columnSpacing * step)
                 let candidateRow = max(minRowSpacing, rowSpacing * step)
                 colSpacing = candidateCol
                 rowSpacing = candidateRow
                 fit = fittedIcon(candidateCol, candidateRow)
-                if fit >= minIconSize { break }
+                if fit >= prefIcon { break }
                 if candidateCol <= minColumnSpacing && candidateRow <= minRowSpacing { break }
             }
         }
 
-        var icon = min(prefIcon, max(minIconSize, fit))
-        var result = GridLayoutConfig(
-            columns: columns, rows: rows,
-            columnSpacing: colSpacing, rowSpacing: rowSpacing, iconSize: icon
-        )
-        // 兜底：标签高度随图标变化，用真实像素尺寸再校验一次
-        while icon > minIconSize,
-              result.gridPixelHeight > H || result.gridPixelWidth > W {
-            icon -= 1
-            result = GridLayoutConfig(
-                columns: columns, rows: rows,
-                columnSpacing: colSpacing, rowSpacing: rowSpacing, iconSize: icon
-            )
+        var icon = growsToFill
+            ? min(maxIconSize, max(minIconSize, fit))
+            : min(prefIcon, max(minIconSize, fit))
+
+        var result = GridLayoutConfig(columns: columns, rows: rows,
+                                      columnSpacing: colSpacing, rowSpacing: rowSpacing, iconSize: icon)
+        // 兜底：先收到最小间距、再收图标；容量本身按最小尺寸推算过，因此不会无解
+        while result.gridPixelHeight > viewport.height || result.gridPixelWidth > viewport.width {
+            if colSpacing > minColumnSpacing || rowSpacing > minRowSpacing {
+                colSpacing = max(minColumnSpacing, colSpacing - 2)
+                rowSpacing = max(minRowSpacing, rowSpacing - 2)
+            } else if icon > minIconSize {
+                icon -= 1
+            } else {
+                break
+            }
+            result = GridLayoutConfig(columns: columns, rows: rows,
+                                      columnSpacing: colSpacing, rowSpacing: rowSpacing, iconSize: icon)
         }
         return result
     }
 
-    /// 全屏网格：用屏幕尺寸把图标放大铺满
-    public static func fullscreenConfig(screenSize: CGSize,
-                                        configured: GridCapacity,
-                                        preferredIconSize: CGFloat,
-                                        columnSpacing: CGFloat,
-                                        rowSpacing: CGFloat,
-                                        spacingScale: CGFloat) -> GridLayoutConfig {
-        let columns = max(configured.columns, 1)
-        let rows = max(configured.rows, 1)
-        let cols = CGFloat(columns)
-        let rowCount = CGFloat(rows)
-        let prefIcon = max(preferredIconSize, minIconSize)
-
-        let scaledCol = max(14, columnSpacing * spacingScale)
-        let scaledRow = max(14, rowSpacing * spacingScale)
-        let labelH: CGFloat = 36
-        let iconForW = (screenSize.width * 0.88 - (cols - 1) * scaledCol) / cols - 16
-        let iconForH = (screenSize.height * 0.84 - (rowCount - 1) * scaledRow) / rowCount - labelH - 8
-        let icon = min(160, max(prefIcon, min(iconForW, iconForH)))
-        return GridLayoutConfig(
-            columns: columns, rows: rows,
-            columnSpacing: scaledCol, rowSpacing: scaledRow, iconSize: icon
-        )
-    }
 }
