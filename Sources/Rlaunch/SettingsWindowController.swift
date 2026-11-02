@@ -102,6 +102,18 @@ fileprivate func makeValueLabel() -> NSTextField {
     return l
 }
 
+/// 结果读数：右对齐、等宽数字、不限定宽度（内容比滑块旁的数值长）
+fileprivate func makeResultLabel() -> NSTextField {
+    let l = NSTextField(labelWithString: "")
+    l.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+    l.textColor = .labelColor
+    l.alignment = .right
+    l.lineBreakMode = .byTruncatingTail
+    l.maximumNumberOfLines = 1
+    l.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+    return l
+}
+
 /// 分组标题：小号次级文字，左对齐到卡片内容缩进
 fileprivate func makeSectionTitle(_ title: String, isFirst: Bool = false) -> NSView {
     let holder = NSView()
@@ -700,10 +712,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let columnSpacingValue = makeValueLabel()
     private let rowSpacingSlider = NSSlider(value: 24, minValue: 0, maxValue: 60, target: nil, action: nil)
     private let rowSpacingValue = makeValueLabel()
-    private let fullscreenScaleSlider = NSSlider(value: 1.6, minValue: 1.0, maxValue: 3.0, target: nil, action: nil)
+    private let fullscreenScaleSlider = NSSlider(value: 1.25, minValue: 1.0, maxValue: 3.0, target: nil, action: nil)
     private let fullscreenScaleValue = makeValueLabel()
     private let iconSizeSlider = NSSlider(value: 64, minValue: 32, maxValue: 128, target: nil, action: nil)
     private let iconSizeValue = makeValueLabel()
+
+    // 网格 · 当前显示效果：按主窗口真实的窗口 / 屏幕尺寸，用与真实布局相同的算式推算
+    /// 由主窗口提供当前窗口与屏幕信息；没有提供时「当前显示效果」显示为空
+    var gridPreviewProvider: (() -> GridPreviewContext?)? {
+        didSet { refreshGridPreview() }
+    }
+    private let windowedContextLabel = NSTextField(labelWithString: "")
+    private let windowedResultLabel = makeResultLabel()
+    private let fullscreenContextLabel = NSTextField(labelWithString: "")
+    private let fullscreenResultLabel = makeResultLabel()
+    private let gridNoteLabel = NSTextField(wrappingLabelWithString: "")
 
     // 应用扫描
     private let scanListHost = NSView()
@@ -1151,10 +1174,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             makeRow(L10n.t("行数"), control: rowsBox),
             makeSliderRow(L10n.t("列间距"), slider: columnSpacingSlider, valueLabel: columnSpacingValue),
             makeSliderRow(L10n.t("行间距"), slider: rowSpacingSlider, valueLabel: rowSpacingValue),
-            makeSliderRow(L10n.t("全屏缩放"), slider: fullscreenScaleSlider, valueLabel: fullscreenScaleValue),
-            makeSliderRow(L10n.t("图标大小"), slider: iconSizeSlider, valueLabel: iconSizeValue),
+            makeSliderRow(L10n.t("全屏缩放"),
+                          subtitle: L10n.t("全屏时图标与间距的放大倍数"),
+                          slider: fullscreenScaleSlider,
+                          valueLabel: fullscreenScaleValue),
+            makeSliderRow(L10n.t("图标大小"),
+                          subtitle: L10n.t("窗口化尺寸，全屏缩放的基准"),
+                          slider: iconSizeSlider,
+                          valueLabel: iconSizeValue),
         ]))
-        stack.addArrangedSubview(makeFootnote(L10n.t("窗口缩小时会自动收紧行数与图标尺寸，不会被顶栏遮挡。")))
+
+        // 实际显示效果：设置值只是「期望」，窗口 / 屏幕放不下时会降级——这里如实告诉用户实际是多少
+        stack.addArrangedSubview(makeSectionTitle(L10n.t("当前显示效果")))
+        stack.addArrangedSubview(makeCard([
+            makeRow(L10n.t("窗口化"), subtitleLabel: windowedContextLabel, control: windowedResultLabel),
+            makeRow(L10n.t("全屏"), subtitleLabel: fullscreenContextLabel, control: fullscreenResultLabel),
+        ]))
+        stack.addArrangedSubview(makeFootnote("", label: gridNoteLabel))
     }
 
     // MARK: 4. 应用扫描设置
@@ -1320,10 +1356,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         columnSpacingValue.stringValue = "\(Int(config.columnSpacing)) pt"
         rowSpacingSlider.doubleValue = config.rowSpacing
         rowSpacingValue.stringValue = "\(Int(config.rowSpacing)) pt"
-        fullscreenScaleSlider.doubleValue = config.fullscreenSpacingScale
-        fullscreenScaleValue.stringValue = String(format: "%.1f×", config.fullscreenSpacingScale)
+        fullscreenScaleSlider.doubleValue = config.fullscreenScale
+        fullscreenScaleValue.stringValue = String(format: "%.2f×", config.fullscreenScale)
         iconSizeSlider.doubleValue = config.iconSize
         iconSizeValue.stringValue = "\(Int(config.iconSize)) pt"
+        refreshGridPreview()
 
         depthStepper.intValue = Int32(config.recursionDepth)
         depthBox.label.stringValue = "\(config.recursionDepth)"
@@ -1349,6 +1386,83 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         pinchValue.textColor = config.pinchEnabled ? .secondaryLabelColor : .tertiaryLabelColor
 
         updatePaletteVisibility()
+    }
+
+    // MARK: 网格：当前显示效果
+
+    /// 主窗口的窗口 / 屏幕尺寸变化时调用：重新推算并刷新「当前显示效果」
+    func gridMetricsDidChange() {
+        refreshGridPreview()
+    }
+
+    /// 「当前显示效果」：设置里的数值只是「期望」，窗口 / 屏幕放不下时会降级。
+    /// 这里按主窗口**当前真实**的窗口与屏幕尺寸，用与真实布局完全相同的算式推算窗口化与全屏下实际会显示成什么样，
+    /// 并如实列出与设置不一致的地方（行数减少、图标缩小、缩放被限制……）。
+    private func refreshGridPreview() {
+        guard let context = gridPreviewProvider?() else {
+            windowedContextLabel.stringValue = ""
+            windowedResultLabel.stringValue = ""
+            fullscreenContextLabel.stringValue = ""
+            fullscreenResultLabel.stringValue = ""
+            gridNoteLabel.stringValue = ""
+            return
+        }
+
+        let settings = config.gridSettings
+        let windowed = GridMetrics.resolve(settings: settings, viewport: context.windowedViewport, mode: .windowed)
+        let fullscreen = GridMetrics.resolve(settings: settings, viewport: context.fullscreenViewport, mode: .fullscreen)
+
+        windowedContextLabel.stringValue = L10n.f("窗口 %d × %d",
+                                                  Int(context.windowSize.width.rounded()),
+                                                  Int(context.windowSize.height.rounded()))
+        windowedResultLabel.stringValue = Self.describe(windowed)
+        windowedResultLabel.textColor = windowed.matchesSettings ? .labelColor : .systemOrange
+
+        let screenSize = L10n.f("%d × %d",
+                                Int(context.screenSize.width.rounded()),
+                                Int(context.screenSize.height.rounded()))
+        fullscreenContextLabel.stringValue = context.screenName.isEmpty ? screenSize : "\(context.screenName) · \(screenSize)"
+        fullscreenResultLabel.stringValue = Self.describe(fullscreen)
+        fullscreenResultLabel.textColor = fullscreen.matchesSettings ? .labelColor : .systemOrange
+
+        var lines: [String] = []
+        let separator = L10n.t("，")
+        if !windowed.matchesSettings {
+            let reasons = windowed.deviations.map { Self.describe($0) }.joined(separator: separator)
+            lines.append(L10n.f("窗口化：%@", reasons))
+        }
+        if !fullscreen.matchesSettings {
+            let reasons = fullscreen.deviations.map { Self.describe($0) }.joined(separator: separator)
+            lines.append(L10n.f("全屏：%@", reasons))
+        }
+        lines.append(lines.isEmpty
+            ? L10n.t("当前设置在窗口化与全屏下都能完整按设置显示。")
+            : L10n.t("调大窗口，或减少行数 / 图标大小，即可按设置完整显示。"))
+        gridNoteLabel.stringValue = lines.joined(separator: "\n")
+    }
+
+    /// 一次推算结果的读数：「7 × 5 · 图标 64 pt · 间距 24 / 24」
+    private static func describe(_ resolution: GridResolution) -> String {
+        let layout = resolution.layout
+        return L10n.f("%d × %d · 图标 %d pt · 间距 %d / %d",
+                      layout.columns, layout.rows,
+                      Int(layout.iconSize.rounded()),
+                      Int(layout.columnSpacing.rounded()), Int(layout.rowSpacing.rounded()))
+    }
+
+    private static func describe(_ deviation: GridDeviation) -> String {
+        switch deviation {
+        case .columnsReduced(let configured, let actual):
+            return L10n.f("每页列数 %d → %d（宽度不足）", configured, actual)
+        case .rowsReduced(let configured, let actual):
+            return L10n.f("每页行数 %d → %d（高度不足）", configured, actual)
+        case .iconShrunk(let percent):
+            return L10n.f("图标缩小到设置值的 %d%%", percent)
+        case .spacingTightened:
+            return L10n.t("间距已收紧")
+        case .scaleLimited(let requested, let applied):
+            return L10n.f("全屏缩放 %.2f× 放不下，实际 %.2f×", requested, applied)
+        }
     }
 
     @objc private func themeDidChangeNotification() {
@@ -1519,7 +1633,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         config.rows = rowsStepper.intValue > 0 ? Int(rowsStepper.intValue) : config.rows
         config.columnSpacing = columnSpacingSlider.doubleValue
         config.rowSpacing = rowSpacingSlider.doubleValue
-        config.fullscreenSpacingScale = fullscreenScaleSlider.doubleValue
+        config.fullscreenScale = fullscreenScaleSlider.doubleValue
         config.iconSize = iconSizeSlider.doubleValue
         config.recursionDepth = depthStepper.intValue > 0 ? Int(depthStepper.intValue) : config.recursionDepth
         config.hotKeyEnabled = hotKeySwitch.state == .on
@@ -1699,6 +1813,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         githubLinkButton.toolTip = L10n.f("在浏览器中打开 %@", AppVersion.repositoryURL)
         darkPaletteView?.retranslate()
         lightPaletteView?.retranslate()
+        refreshGridPreview()   // 含数值的读数无法反查翻译，按新语言重新生成
         layoutContent()
     }
 
@@ -1845,7 +1960,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         config.rows = defaults.rows
         config.columnSpacing = defaults.columnSpacing
         config.rowSpacing = defaults.rowSpacing
-        config.fullscreenSpacingScale = defaults.fullscreenSpacingScale
+        config.fullscreenScale = defaults.fullscreenScale
         config.iconSize = defaults.iconSize
         config.recursionDepth = defaults.recursionDepth
         config.scanPaths = defaults.scanPaths
@@ -1915,6 +2030,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     func show(relativeTo parent: NSWindow?) {
         guard let window else { return }
+        // 主窗口的大小 / 所在屏幕可能在设置面板关闭期间变过：每次打开都按最新情况重新推算「当前显示效果」
+        refreshGridPreview()
         if let parent {
             let pf = parent.frame
             let f = window.frame

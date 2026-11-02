@@ -28,6 +28,8 @@ final class SnapScrollView: NSScrollView {
     var onTextInput: ((String) -> Void)?
     /// ⌘F 聚焦搜索框
     var onFocusSearch: (() -> Void)?
+    /// ⌘V：把多选中转站里的项目「粘贴」到当前页（等同点「放本页」）
+    var onPaste: (() -> Void)?
     /// 回车：打开首个搜索结果
     var onConfirm: (() -> Void)?
     /// 方向键：参数为 (水平方向, 垂直方向)，用于键盘焦点导航
@@ -269,6 +271,12 @@ final class SnapScrollView: NSScrollView {
         if event.modifierFlags.contains(.command),
            event.charactersIgnoringModifiers?.lowercased() == "f" {
             onFocusSearch?()
+            return
+        }
+        // ⌘V：粘贴中转站里的项目到当前页
+        if event.modifierFlags.contains(.command),
+           event.charactersIgnoringModifiers?.lowercased() == "v" {
+            onPaste?()
             return
         }
         switch event.keyCode {

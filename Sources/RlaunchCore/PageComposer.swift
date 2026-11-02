@@ -26,30 +26,36 @@ public enum PageComposer {
 
     /// 组装分页。
     /// - Parameters:
-    ///   - savedPages: 按 `pageOrders` 顺序解析出的各页条目；空数组表示用户刻意留白的页面
+    ///   - savedPages: 按 `pageOrders` 顺序解析出的各页条目；空数组表示用户刻意留白（新建）的页面
     ///   - unvisited: 未出现在任何页面记录中的条目（新增应用、新建文件夹等）
     ///
-    /// 未访问条目先尽量补进最后一页的空位，剩下的再按容量切成新页。
+    /// 用户新建的空白页（包括末尾的）原样保留；未访问条目先尽量补进**最后一个有内容的页面**的空位
+    /// （不会悄悄塞进用户留白的页面），剩下的再按容量切成新页追加到末尾。
+    /// 一个已登记条目都没有时（首次分页 / 全部清空）直接按容量切页。
     public static func compose(savedPages: [[GridItem]],
                                unvisited: [GridItem],
                                columns: Int,
                                rows: Int) -> [[GridItem]] {
+        guard !unvisited.isEmpty else { return savedPages.isEmpty ? [[]] : savedPages }
+        guard let lastFilled = savedPages.lastIndex(where: { !$0.isEmpty }) else {
+            return chunk(unvisited, columns: columns, rows: rows)
+        }
+
         var pages = savedPages
         var remaining = unvisited
 
-        if !remaining.isEmpty, let last = pages.last, !last.isEmpty {
-            let fit = GridPacker.fitCount(for: last + remaining, columns: columns, rows: rows)
-            if fit > last.count {
-                let take = fit - last.count
-                pages[pages.count - 1] = last + remaining.prefix(take)
-                remaining = Array(remaining.dropFirst(take))
-            }
+        let last = pages[lastFilled]
+        let fit = GridPacker.fitCount(for: last + remaining, columns: columns, rows: rows)
+        if fit > last.count {
+            let take = fit - last.count
+            pages[lastFilled] = last + remaining.prefix(take)
+            remaining = Array(remaining.dropFirst(take))
         }
 
         if !remaining.isEmpty {
             pages.append(contentsOf: chunk(remaining, columns: columns, rows: rows))
         }
-        return trimTrailingEmpty(pages)
+        return pages
     }
 
     /// 移除末尾的空页（至少保留一页）；内部刻意留白的空页保持不动
@@ -61,11 +67,53 @@ public enum PageComposer {
         return result.isEmpty ? [[]] : result
     }
 
-    /// 回收空页（字符串键版本，用于 `pageOrders`）
-    public static func compact(_ pages: [[String]]) -> [[String]] {
-        guard pages.count > 1 else { return pages.isEmpty ? [[]] : pages }
-        let nonEmpty = pages.filter { !$0.isEmpty }
-        return nonEmpty.isEmpty ? [[]] : nonEmpty
+    // MARK: - 页面的新建 / 删除 / 回收
+
+    /// 在第 `index` 页之后插入一个空白页（`index = -1` 表示插到最前面）
+    public static func insertingBlankPage(after index: Int, in pages: [[GridItem]]) -> [[GridItem]] {
+        var result = pages.isEmpty ? [[]] : pages
+        let position = min(max(index + 1, 0), result.count)
+        result.insert([], at: position)
+        return result
+    }
+
+    /// 删除第 `index` 页。
+    ///
+    /// 页内条目**不会丢失**：并入上一页末尾（第一页则并入下一页开头），放不下的按容量顺延到后面的页面。
+    /// 顺序保持不变，只是页边界会移动。至少保留一页；越界时原样返回。
+    ///
+    /// 注意：若其余页面都已排满，被删页的条目无法凭空消失，结果的页数可能不会减少——
+    /// 调用方可据此判断「这次删除并没有真正生效」并提示用户。
+    public static func deletingPage(_ index: Int,
+                                    in pages: [[GridItem]],
+                                    columns: Int,
+                                    rows: Int) -> [[GridItem]] {
+        guard pages.count > 1, pages.indices.contains(index) else { return pages }
+        var result = pages
+        let removed = result.remove(at: index)
+        guard !removed.isEmpty else { return result }
+
+        if index > 0 {
+            result[index - 1].append(contentsOf: removed)
+            return reflow(result, from: index - 1, columns: columns, rows: rows)
+        }
+        result[0].insert(contentsOf: removed, at: 0)
+        return reflow(result, from: 0, columns: columns, rows: rows)
+    }
+
+    /// 回收「被本次操作腾空」的页面。
+    ///
+    /// 操作前有内容、操作后变空的页面才会被移除（例如把某页最后一个应用移进文件夹 / 移到别页 / 隐藏 / 卸载）；
+    /// 操作前就是空白的页面（用户新建的）原样保留。两个数组按页序一一对应（页数可以不同，超出部分直接保留）。
+    /// 至少保留一页。
+    public static func recycleVacated(before: [[GridItem]], after: [[GridItem]]) -> [[GridItem]] {
+        var result: [[GridItem]] = []
+        for (index, page) in after.enumerated() {
+            let wasPopulated = index < before.count && !before[index].isEmpty
+            if page.isEmpty && wasPopulated { continue }
+            result.append(page)
+        }
+        return result.isEmpty ? [[]] : result
     }
 
     // MARK: - 增删与移动

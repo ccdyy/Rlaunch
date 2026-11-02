@@ -164,9 +164,13 @@ final class SelectionTrayView: NSView {
     var onCancelAll: (() -> Void)?
     var onPlaceAction: (() -> Void)?
     var onCreateFolder: (() -> Void)?
+    /// 把选中项放进一个新建的页面
+    var onPlaceNewPage: (() -> Void)?
 
     private(set) var items: [GridItem] = []
     private(set) var isFolderTarget: Bool = false
+    /// 「放新页」是否可用：文件夹弹窗打开时「放」的目标是那个文件夹，不能同时把条目放到新页面
+    private var newPageAllowed: Bool = true
 
     // 采用纯净半透明圆角卡片，彻底根除 NSVisualEffectView 在顶部的黑色横线
     private let backgroundCard = NSView()
@@ -178,6 +182,7 @@ final class SelectionTrayView: NSView {
 
     private let placeButton = NSButton()
     private let createFolderButton = NSButton()
+    private let newPageButton = NSButton()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -209,6 +214,9 @@ final class SelectionTrayView: NSView {
         setupActionButton(placeButton, title: L10n.t("放本页"), bg: NSColor.controlAccentColor, action: #selector(placeClicked))
         // 新建文件夹按钮（≥2个App时显示）
         setupActionButton(createFolderButton, title: L10n.t("建文件夹"), bg: NSColor.systemGreen, action: #selector(createFolderClicked))
+        // 放进新建页面（在文件夹弹窗里不适用，隐藏）
+        setupActionButton(newPageButton, title: L10n.t("放新页"), bg: NSColor.systemIndigo, action: #selector(newPageClicked))
+        newPageButton.toolTip = L10n.t("新建一个页面，并把选中的项目放进去")
 
         // 最后安装描边：位于内容之上，不拦截拖动/点击
         edgeStroke = EdgeStrokeView.install(on: backgroundCard,
@@ -270,14 +278,38 @@ final class SelectionTrayView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func setTargetMode(isFolder: Bool) {
-        self.isFolderTarget = isFolder
-        let title = isFolder ? L10n.t("放文件夹") : L10n.t("放本页")
-        placeButton.attributedTitle = NSAttributedString(string: title, attributes: [
+    private func setActionTitle(_ button: NSButton, _ title: String) {
+        button.attributedTitle = NSAttributedString(string: title, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
             .foregroundColor: NSColor.white
         ])
+    }
+
+    func setTargetMode(isFolder: Bool) {
+        self.isFolderTarget = isFolder
+        setActionTitle(placeButton, isFolder ? L10n.t("放文件夹") : L10n.t("放本页"))
+        updateNewPageButtonVisibility()
         needsLayout = true
+    }
+
+    /// 文件夹弹窗打开期间隐藏「放新页」（弹窗里没有「页」的概念，且选中的可能正是弹窗内的应用）
+    func setNewPageAvailable(_ available: Bool) {
+        newPageAllowed = available
+        updateNewPageButtonVisibility()
+        needsLayout = true
+    }
+
+    private func updateNewPageButtonVisibility() {
+        newPageButton.isHidden = isFolderTarget || !newPageAllowed
+    }
+
+    /// 语言切换后刷新按钮文案与提示
+    func applyLanguage() {
+        setTargetMode(isFolder: isFolderTarget)
+        setActionTitle(createFolderButton, L10n.t("建文件夹"))
+        setActionTitle(newPageButton, L10n.t("放新页"))
+        newPageButton.toolTip = L10n.t("新建一个页面，并把选中的项目放进去")
+        closeButton.toolTip = L10n.t("清空并退出多选")
     }
 
     func setItems(_ newItems: [GridItem]) {
@@ -313,6 +345,7 @@ final class SelectionTrayView: NSView {
         let headerH: CGFloat = 30
         var footerH: CGFloat = 36
         if !createFolderButton.isHidden { footerH += 30 }
+        if !newPageButton.isHidden { footerH += 30 }
 
         let iconS: CGFloat = 68
         let spacing = Self.itemSpacing
@@ -338,6 +371,10 @@ final class SelectionTrayView: NSView {
             createFolderButton.frame = NSRect(x: margin, y: currentY, width: btnW, height: btnH)
             currentY += btnH + 4
         }
+        if !newPageButton.isHidden {
+            newPageButton.frame = NSRect(x: margin, y: currentY, width: btnW, height: btnH)
+            currentY += btnH + 4
+        }
         placeButton.frame = NSRect(x: margin, y: currentY, width: btnW, height: btnH)
         currentY += btnH + 8
 
@@ -359,6 +396,7 @@ final class SelectionTrayView: NSView {
     }
 
     @objc private func placeClicked() { onPlaceAction?() }
+    @objc private func newPageClicked() { onPlaceNewPage?() }
     @objc private func createFolderClicked() { onCreateFolder?() }
     @objc private func cancelClicked() { onCancelAll?() }
 }

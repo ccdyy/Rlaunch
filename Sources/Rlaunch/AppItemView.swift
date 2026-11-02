@@ -5,6 +5,25 @@ extension NSPasteboard.PasteboardType {
     static let rlaunchAppPath = NSPasteboard.PasteboardType("com.rlaunch.app-path")
     static let rlaunchFolderID = NSPasteboard.PasteboardType("com.rlaunch.folder-id")
     static let rlaunchReorderItems = NSPasteboard.PasteboardType("com.rlaunch.reorder-items")
+
+    /// 能把条目放到某一页 / 某个位置的全部拖拽载荷类型
+    static let rlaunchItemDragTypes: [NSPasteboard.PasteboardType] = [
+        .rlaunchReorderItems, .rlaunchAppPath, .rlaunchFolderID,
+    ]
+}
+
+extension NSPasteboard {
+    /// 拖拽载荷里的条目标识符：多选重排（JSON 数组）/ 单个应用 / 单个文件夹；没有可识别载荷时为空。
+    var rlaunchDraggedItemIDs: [String] {
+        if let jsonStr = string(forType: .rlaunchReorderItems),
+           let data = jsonStr.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([String].self, from: data) {
+            return decoded
+        }
+        if let path = string(forType: .rlaunchAppPath) { return ["app:\(path)"] }
+        if let folderId = string(forType: .rlaunchFolderID) { return ["folder:\(folderId)"] }
+        return []
+    }
 }
 
 // MARK: - 多选状态指示徽章

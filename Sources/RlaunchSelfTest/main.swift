@@ -222,7 +222,7 @@ func testConfigStore() throws {
     let legacyData = legacyJSON.data(using: .utf8)!
     if let decoded = try? JSONDecoder().decode(AppConfig.self, from: legacyData) {
         check(decoded.columnSpacing == 24 && decoded.rowSpacing == 24
-              && decoded.fullscreenSpacingScale == 1.6, "旧配置缺新字段时使用默认值")
+              && decoded.fullscreenScale == 1.25, "旧配置缺新字段时使用默认值")
         check(decoded.scanPaths == ["/Applications", "/Users/olduser/Applications"], "旧配置自定义路径不被迁移")
         check(decoded.pinchEnabled == true && decoded.pinchThreshold == 0.7,
               "旧 gesture 字段迁移为捏合字段")
@@ -234,6 +234,20 @@ func testConfigStore() throws {
         check(decoded.darkBgPreset == "default" && decoded.lightBgPreset == "softGray", "旧配置缺背景预设字段时使用默认值")
     } else {
         check(false, "旧格式配置可正常解码（缺新字段不崩溃）")
+    }
+
+    // 早期的「全屏间距放大倍数」字段已被「全屏缩放」取代：旧值被忽略，使用新默认值，且不影响其余字段
+    let spacingScaleJSON = """
+    {"columns": 6, "rows": 4, "iconSize": 72, "fullscreenSpacingScale": 2.5, "scanPaths": ["/Applications"]}
+    """
+    if let decoded = try? JSONDecoder().decode(AppConfig.self, from: spacingScaleJSON.data(using: .utf8)!) {
+        check(decoded.fullscreenScale == 1.25, "旧的全屏间距倍数字段被忽略，使用新的全屏缩放默认值")
+        check(decoded.columns == 6 && decoded.rows == 4 && decoded.iconSize == 72, "忽略旧字段不影响其他网格设置")
+        let settings = decoded.gridSettings
+        check(settings.columns == 6 && settings.rows == 4 && settings.iconSize == 72
+              && settings.fullscreenScale == 1.25, "gridSettings 如实反映配置")
+    } else {
+        check(false, "带旧全屏间距字段的配置可正常解码")
     }
 }
 
@@ -306,7 +320,7 @@ func testApplySettings() {
     panel.rows = 4
     panel.columnSpacing = 31
     panel.rowSpacing = 32
-    panel.fullscreenSpacingScale = 2.2
+    panel.fullscreenScale = 2.2
     panel.iconSize = 96
     panel.hotKeyEnabled = true
     panel.hotKeyKeyCode = 49
@@ -324,8 +338,8 @@ func testApplySettings() {
     check(merged.theme == .light && merged.bgOpacity == 0.42 && merged.bgBlur == 33, "外观设置会被持久化")
     check(merged.darkBgPreset == "midnight" && merged.lightBgPreset == "warmOat", "背景颜色预设会被持久化")
     check(merged.columns == 9 && merged.rows == 4 && merged.iconSize == 96, "网格设置会被持久化")
-    check(merged.columnSpacing == 31 && merged.rowSpacing == 32 && merged.fullscreenSpacingScale == 2.2,
-          "间距设置会被持久化")
+    check(merged.columnSpacing == 31 && merged.rowSpacing == 32 && merged.fullscreenScale == 2.2,
+          "间距与全屏缩放设置会被持久化")
     check(merged.scanPaths == ["/Custom"] && merged.recursionDepth == 5, "扫描设置会被持久化")
     check(merged.hotKeyEnabled && merged.hotKeyKeyCode == 49 && merged.hotKeyModifiers == 256,
           "快捷键设置会被持久化")
@@ -524,18 +538,69 @@ func testPageComposer() {
     check(composed.count == 2 && composed[0].count == 3 && composed[1].count == 1,
           "未登记条目优先补进最后一页空位，其余另起新页")
 
-    // 刻意留白的中间页保留，末尾空页回收
+    // 用户新建的空白页（含末尾的）原样保留
     let withBlank = PageComposer.compose(
         savedPages: [[apps[0]], [], [apps[1]]], unvisited: [], columns: 2, rows: 2)
-    check(withBlank.count == 3 && withBlank[1].isEmpty, "用户刻意留白的中间页被保留")
+    check(withBlank.count == 3 && withBlank[1].isEmpty, "用户新建的中间空白页被保留")
 
     let trailingBlank = PageComposer.compose(
         savedPages: [[apps[0]], []], unvisited: [], columns: 2, rows: 2)
-    check(trailingBlank.count == 1, "末尾空页被回收")
+    check(trailingBlank.count == 2 && trailingBlank[1].isEmpty, "末尾的空白页同样保留（新建页不会被悄悄回收）")
 
-    check(PageComposer.compact([["a"], [], ["b"], []]) == [["a"], ["b"]], "空页回收保留顺序")
-    check(PageComposer.compact([[], []]) == [[]], "全部为空时至少保留一页")
-    check(PageComposer.compact([["a"]]) == [["a"]], "单页不做回收处理")
+    // 新增条目补进最后一个有内容的页面，不会塞进用户留白的页面
+    let filledPastBlank = PageComposer.compose(
+        savedPages: [[apps[0]], []], unvisited: [apps[1]], columns: 2, rows: 2)
+    check(filledPastBlank.count == 2 && filledPastBlank[0] == [apps[0], apps[1]] && filledPastBlank[1].isEmpty,
+          "未登记条目补进最后一个有内容的页面，末尾空白页保持空白")
+    let overflowPastBlank = PageComposer.compose(
+        savedPages: [[apps[0]], []], unvisited: [apps[1], apps[2]], columns: 2, rows: 1)
+    check(overflowPastBlank.count == 3 && overflowPastBlank[1].isEmpty && overflowPastBlank[2] == [apps[2]],
+          "补不下的条目另起新页，追加到空白页之后")
+    let allBlank = PageComposer.compose(
+        savedPages: [[], []], unvisited: [apps[0], apps[1], apps[2]], columns: 2, rows: 1)
+    check(allBlank.map { $0.count } == [2, 1], "没有任何已登记条目时直接按容量切页（不留前导空页）")
+    check(PageComposer.compose(savedPages: [], unvisited: [], columns: 2, rows: 1) == [[]], "什么都没有时保留一个空页")
+
+    // 新建空白页
+    let twoPages: [[GridItem]] = [[apps[0]], [apps[1]]]
+    check(PageComposer.insertingBlankPage(after: 0, in: twoPages) == [[apps[0]], [], [apps[1]]], "在指定页之后新建空白页")
+    check(PageComposer.insertingBlankPage(after: 1, in: twoPages) == [[apps[0]], [apps[1]], []], "在末尾新建空白页")
+    check(PageComposer.insertingBlankPage(after: -1, in: twoPages) == [[], [apps[0]], [apps[1]]], "index = -1 时新建在最前")
+    check(PageComposer.insertingBlankPage(after: 99, in: twoPages).count == 3, "index 越界时追加到末尾")
+    check(PageComposer.insertingBlankPage(after: 0, in: []) == [[], []], "没有页面时也能新建")
+
+    // 删除页面：空白页直接删；有内容的并入相邻页，顺序不变，条目不丢失
+    check(PageComposer.deletingPage(1, in: [[apps[0]], [], [apps[1]]], columns: 2, rows: 2) == [[apps[0]], [apps[1]]],
+          "删除空白页")
+    check(PageComposer.deletingPage(1, in: [[apps[0]], [apps[1], apps[2]]], columns: 3, rows: 1)
+            == [[apps[0], apps[1], apps[2]]], "删除有内容的页：条目并入上一页末尾")
+    check(PageComposer.deletingPage(0, in: [[apps[0]], [apps[1]]], columns: 2, rows: 1) == [[apps[0], apps[1]]],
+          "删除第一页：条目并入下一页开头")
+    let fullPages: [[GridItem]] = [[apps[0], apps[1]], [apps[2], apps[3]], [apps[4]]]
+    let cannotShrink = PageComposer.deletingPage(1, in: fullPages, columns: 2, rows: 1)
+    check(cannotShrink.count == fullPages.count
+          && cannotShrink.flatMap { $0 }.map { $0.identifier } == fullPages.flatMap { $0 }.map { $0.identifier },
+          "其余页面都排满时：条目一个不丢、顺序不变，页数不会减少（调用方据此提示）")
+    check(PageComposer.deletingPage(0, in: [[apps[0]]], columns: 2, rows: 1) == [[apps[0]]], "只剩一页时不能删除")
+    check(PageComposer.deletingPage(5, in: [[apps[0]], []], columns: 2, rows: 1) == [[apps[0]], []], "页序越界时原样返回")
+
+    // 回收被腾空的页面：操作前有内容、操作后为空才回收；用户新建的空白页保留
+    let beforeMove: [[GridItem]] = [[apps[0]], [apps[1]], [], [apps[2]]]
+    let afterMoveAway: [[GridItem]] = [[apps[0], apps[1]], [], [], [apps[2]]]
+    check(PageComposer.recycleVacated(before: beforeMove, after: afterMoveAway) == [[apps[0], apps[1]], [], [apps[2]]],
+          "被腾空的页面被回收，原本就空白的页面保留")
+    check(PageComposer.recycleVacated(before: [[apps[0]], []], after: [[apps[0]], []]) == [[apps[0]], []],
+          "没有页面被腾空时，用户新建的空白页不会被回收")
+    check(PageComposer.recycleVacated(before: [[apps[0]]], after: [[]]) == [[]], "回收后至少保留一页")
+    check(PageComposer.recycleVacated(before: [[apps[0]]], after: [[apps[0]], [apps[1]]]).count == 2,
+          "超出操作前页数的新页原样保留")
+
+    // 「放新页」：先插入空白页，再把选中项移进去；以插入后的页面为基准回收，新页不会被误回收
+    let withNewPage = PageComposer.insertingBlankPage(after: 0, in: [[apps[0]], [apps[1]], [apps[2]]])
+    let movedToNewPage = PageComposer.move([apps[1]], toPage: 1, at: 0, in: withNewPage, columns: 2, rows: 1)
+    check(movedToNewPage == [[apps[0]], [apps[1]], [], [apps[2]]], "选中项移入新建页，原页被腾空")
+    check(PageComposer.recycleVacated(before: withNewPage, after: movedToNewPage)
+            == [[apps[0]], [apps[1]], [apps[2]]], "放新页：新页被填充保留，被腾空的原页被回收")
 
     // 移除：只剔除指定条目，保留页面结构
     let removed = PageComposer.removing(["app:/Applications/App0.app"], from: [[apps[0], apps[1]], [apps[2]]])
@@ -572,106 +637,235 @@ func testPageComposer() {
 
 // MARK: - 网格容量与尺寸推算
 
+/// 用一套固定的「真实屏幕」检验：同一份设置在不同屏幕上显示的图标尺寸差距
+private let referenceScreens: [(name: String, width: CGFloat, height: CGFloat, safeTop: CGFloat)] = [
+    ("MacBook Air 13（刘海）", 1470, 956, 32),
+    ("MacBook Pro 14（刘海）", 1512, 982, 32),
+    ("MacBook Pro 16（刘海）", 1728, 1117, 32),
+    ("MacBook Air 15", 1710, 1107, 0),
+    ("Intel MBP 13", 1440, 900, 0),
+    ("MacBook 12", 1280, 800, 0),
+    ("外接 1080p", 1920, 1080, 0),
+    ("大屏 1440p", 2560, 1440, 0),
+]
+
 func testGridMetrics() {
     print("GridMetrics:")
 
-    let configured = GridCapacity(columns: 7, rows: 5)
+    let defaults = GridSettings()   // 7 × 5 · 64pt · 间距 24 · 全屏缩放 1.25
 
-    // 窗口最小尺寸（620×440）下的可视网格区：高度不足时减少行数而不是把内容裁掉
-    let smallViewport = CGSize(width: 620, height: 292)
-    let small = GridMetrics.capacity(viewport: smallViewport, configured: configured)
-    check(small.columns == 7, "宽度足够时列数保持配置值")
-    check(small.rows == 3, "高度不足时行数收缩到 3（620×292）")
+    // MARK: 设置 = 实际（空间充足时一个像素都不改）
 
-    // 大窗口：完全按配置
-    let big = GridMetrics.capacity(viewport: CGSize(width: 1600, height: 900), configured: configured)
-    check(big == configured, "大窗口容量等于配置值")
+    let roomy = GridMetrics.resolve(settings: defaults, viewport: CGSize(width: 1600, height: 900), mode: .windowed)
+    check(roomy.layout.columns == 7 && roomy.layout.rows == 5, "空间充足：行列数等于设置")
+    check(roomy.layout.iconSize == 64 && roomy.layout.columnSpacing == 24 && roomy.layout.rowSpacing == 24,
+          "空间充足：图标与间距等于设置（不再被「铺满」放大）")
+    check(roomy.matchesSettings && roomy.appliedScale == 1, "空间充足：与设置完全一致，没有任何差异")
+
+    // 回归：图标 76pt 的设置在 1329×462 的网格区里，旧算法把图标压到 41pt（设置界面写 76、实际 41）。
+    // 现在图标保持 76pt，只把行数从 5 减到 3，并如实报告。
+    let big = GridSettings(columns: 7, rows: 5, iconSize: 76, columnSpacing: 24, rowSpacing: 24, fullscreenScale: 1.6)
+    let wide = GridMetrics.resolve(settings: big, viewport: CGSize(width: 1329, height: 462), mode: .windowed)
+    check(wide.layout.iconSize == 76, "回归：矮窗口里图标仍是设置的 76pt（旧算法为 41pt）")
+    check(wide.layout.columns == 7 && wide.layout.rows == 3, "矮窗口通过减少行数来放下（5 → 3 行）")
+    check(wide.deviations == [.rowsReduced(configured: 5, actual: 3)], "差异只有「行数减少」这一项")
+
+    // 窗口再矮：图标最多缩到设置值的 85%，其余靠收紧间距
+    let tight = GridMetrics.resolve(settings: big, viewport: CGSize(width: 1329, height: 230), mode: .windowed)
+    check(tight.layout.rows == 2, "很矮的窗口：减到 2 行")
+    check(tight.iconRatio >= GridMetrics.iconFloorRatio - 0.001, "很矮的窗口：图标至多缩到设置值的 85%")
+    check(tight.deviations.contains(.spacingTightened), "很矮的窗口：报告「间距已收紧」")
+    check(tight.deviations.contains { if case .iconShrunk = $0 { return true } else { return false } },
+          "很矮的窗口：报告「图标缩小」")
+
+    // 极端：连最小网格都放不下时，才突破 85% 一路缩到硬下限，且仍不溢出
+    let squeezedView = CGSize(width: 300, height: 180)
+    let squeezed = GridMetrics.resolve(settings: defaults, viewport: squeezedView, mode: .windowed)
+    check(squeezed.layout.iconSize >= GridMetrics.minIconSize, "极端狭小：图标不低于硬下限")
+    check(squeezed.layout.gridPixelWidth <= squeezedView.width + 0.01
+          && squeezed.layout.gridPixelHeight <= squeezedView.height + 0.01, "极端狭小：依然不溢出")
 
     // 容量下限：极端窄小也不会变成 0
-    let tiny = GridMetrics.capacity(viewport: CGSize(width: 40, height: 40), configured: configured)
-    check(tiny.columns >= 1 && tiny.rows >= 1, "极端尺寸下容量至少为 1×1")
+    let tiny = GridMetrics.resolve(settings: defaults, viewport: CGSize(width: 40, height: 40), mode: .windowed)
+    check(tiny.capacity.columns >= 1 && tiny.capacity.rows >= 1, "极端尺寸下容量至少为 1×1")
 
-    // 任一窗口尺寸下，推算出的网格都必须完整落在可视区内（顶栏遮挡问题的根因回归）
+    // 窗口尚未布局：原样返回设置，避免用 0 尺寸算出 1×1
+    let notLaidOut = GridMetrics.resolve(settings: defaults, viewport: .zero, mode: .windowed)
+    check(notLaidOut.layout.columns == 7 && notLaidOut.layout.rows == 5 && notLaidOut.layout.iconSize == 64,
+          "尚未布局时按设置原样返回")
+
+    // 非法输入被规整
+    let sloppy = GridSettings(columns: 0, rows: -3, iconSize: 4, columnSpacing: -5, rowSpacing: -5, fullscreenScale: 0.2)
+    let sanitized = GridMetrics.resolve(settings: sloppy, viewport: CGSize(width: 1600, height: 900), mode: .fullscreen)
+    check(sanitized.settings.columns == 1 && sanitized.settings.rows == 1
+          && sanitized.settings.iconSize == GridMetrics.minIconSize
+          && sanitized.settings.columnSpacing == 0 && sanitized.settings.fullscreenScale == 1,
+          "非法设置被规整到合法范围")
+
+    // MARK: 不溢出（顶栏遮挡问题的根因回归）+ 单调 + 不超尺寸
+
+    let sweepSettings: [(String, GridSettings)] = [
+        ("默认", defaults),
+        ("大图标宽间距", GridSettings(columns: 7, rows: 5, iconSize: 128, columnSpacing: 60, rowSpacing: 60, fullscreenScale: 2)),
+        ("小图标密排", GridSettings(columns: 10, rows: 8, iconSize: 40, columnSpacing: 10, rowSpacing: 10, fullscreenScale: 1)),
+        ("单列单行", GridSettings(columns: 1, rows: 1, iconSize: 64, columnSpacing: 24, rowSpacing: 24, fullscreenScale: 1.5)),
+    ]
     var overflow: [String] = []
     var grew: [String] = []
-    for w in stride(from: CGFloat(620), through: 1800, by: 40) {
-        for h in stride(from: CGFloat(200), through: 1000, by: 20) {
-            let viewport = CGSize(width: w, height: h)
-            let capacity = GridMetrics.capacity(viewport: viewport, configured: configured)
-            let cfg = GridMetrics.windowedConfig(
-                viewport: viewport, capacity: capacity,
-                preferredIconSize: 64, columnSpacing: 24, rowSpacing: 24)
-            if cfg.gridPixelHeight > h + 0.01 || cfg.gridPixelWidth > w + 0.01 {
-                overflow.append("\(Int(w))×\(Int(h))")
-            }
-            if cfg.iconSize > 64 + 0.01 { grew.append("\(Int(w))×\(Int(h))") }
-        }
-    }
-    check(overflow.isEmpty, "任意窗口尺寸下网格都不超出可视区\(overflow.isEmpty ? "" : "：" + overflow.prefix(3).joined(separator: ", "))")
-    check(grew.isEmpty, "窗口化时图标不会超过配置尺寸")
-
-    // 图标不会小于下限，且间距收紧后仍保持正向
-    let cramped = GridMetrics.windowedConfig(
-        viewport: CGSize(width: 620, height: 300), capacity: GridCapacity(columns: 7, rows: 3),
-        preferredIconSize: 128, columnSpacing: 60, rowSpacing: 60)
-    check(cramped.iconSize >= GridMetrics.minIconSize, "间距自动收紧后图标不低于下限")
-    check(cramped.gridPixelHeight <= 300.01, "间距收紧后依然不溢出")
-
-    // 全屏：图标按可视区放大
-    let fullViewport = CGSize(width: 1920, height: 1080 - 56 - 68)
-    let full = GridMetrics.fullscreenConfig(
-        viewport: fullViewport, capacity: GridMetrics.capacity(viewport: fullViewport, configured: configured),
-        preferredIconSize: 64, columnSpacing: 24, rowSpacing: 24, spacingScale: 1.6)
-    check(full.columns == 7 && full.rows == 5, "全屏使用配置的行列数")
-    check(full.iconSize >= 64, "全屏时图标不小于配置尺寸")
-
-    // 回归：笔记本全屏时，网格必须落在**真实可视区**内。
-    // 之前用 NSScreen.frame 推算，把顶栏 56pt + 刘海安全区 + 底栏 68pt 全算进了可用高度，
-    // 导致网格比可视区高 20pt，首行图标被裁掉顶部——看起来就像被顶栏盖住。
-    let laptopScreens: [(name: String, width: CGFloat, height: CGFloat, safeTop: CGFloat, rows: Int)] = [
-        ("MacBook Air 13（刘海）", 1470, 956, 32, 5),
-        ("MacBook Pro 14（刘海）", 1512, 982, 32, 5),
-        ("MacBook Pro 16（刘海）", 1728, 1117, 32, 5),
-        ("MacBook Air 15", 1710, 1107, 0, 5),
-        ("Intel MBP 13", 1440, 900, 0, 5),
-        ("MacBook 12", 1280, 800, 0, 5),
-        ("外接 1080p", 1920, 1080, 0, 5),
-        ("大屏 6 行", 2560, 1440, 0, 6),
-        ("小屏 8 行", 1280, 800, 0, 8),
-    ]
-    var fullscreenOverflow: [String] = []
-    for screen in laptopScreens {
-        let viewport = CGSize(
-            width: screen.width,
-            height: screen.height - 56 - screen.safeTop - 68)   // 与 rootChromeLayout 一致
-        for scale in [CGFloat(1.0), 1.6, 2.5, 3.0] {
-            let capacity = GridMetrics.capacity(viewport: viewport,
-                                                configured: GridCapacity(columns: 8, rows: screen.rows))
-            let cfg = GridMetrics.fullscreenConfig(
-                viewport: viewport, capacity: capacity,
-                preferredIconSize: 74, columnSpacing: 24, rowSpacing: 24, spacingScale: scale)
-            if cfg.gridPixelHeight > viewport.height + 0.01 || cfg.gridPixelWidth > viewport.width + 0.01 {
-                fullscreenOverflow.append("\(screen.name)/×\(scale)")
+    var belowFloor: [String] = []
+    for (label, settings) in sweepSettings {
+        for mode in [GridMode.windowed, .fullscreen] {
+            for w in stride(from: CGFloat(300), through: 2600, by: 100) {
+                for h in stride(from: CGFloat(160), through: 1400, by: 20) {
+                    let viewport = CGSize(width: w, height: h)
+                    let result = GridMetrics.resolve(settings: settings, viewport: viewport, mode: mode)
+                    let cfg = result.layout
+                    let tag = "\(label)/\(mode == .windowed ? "窗口" : "全屏")/\(Int(w))×\(Int(h))"
+                    let usableW = viewport.width * (mode == .fullscreen ? GridMetrics.fullscreenFill.width : 1)
+                    let usableH = viewport.height * (mode == .fullscreen ? GridMetrics.fullscreenFill.height : 1)
+                    // 连单个最小单元格都放不下时无法保证（1×1 网格才是兜底）
+                    let canHoldMinimum = usableW >= GridMetrics.minCellWidth && usableH >= GridMetrics.minCellHeight
+                    if canHoldMinimum,
+                       cfg.gridPixelHeight > usableH + 0.01 || cfg.gridPixelWidth > usableW + 0.01 {
+                        overflow.append(tag)
+                    }
+                    if cfg.iconSize > result.expectedIconSize + 0.01 { grew.append(tag) }
+                    // 只要放得下最小的「像样」网格，图标就不会低于设置值的 85%
+                    let minGridWidth = CGFloat(min(settings.columns, GridMetrics.minHonoredColumns))
+                        * (settings.iconSize * GridMetrics.iconFloorRatio + 20)
+                    let minGridHeight = CGFloat(min(settings.rows, GridMetrics.minHonoredRows))
+                        * (settings.iconSize * GridMetrics.iconFloorRatio + 60)
+                    if usableW >= minGridWidth + 80, usableH >= minGridHeight + 80,
+                       result.iconRatio < GridMetrics.iconFloorRatio - 0.001,
+                       settings.iconSize * GridMetrics.iconFloorRatio >= GridMetrics.minIconSize {
+                        belowFloor.append(tag)
+                    }
+                }
             }
         }
     }
-    check(fullscreenOverflow.isEmpty,
-          "全屏网格不超出可视区（含刘海屏与小屏）\(fullscreenOverflow.isEmpty ? "" : "：" + fullscreenOverflow.joined(separator: ", "))")
+    check(overflow.isEmpty, "任意窗口 / 屏幕尺寸下网格都不超出可视区\(overflow.isEmpty ? "" : "：" + overflow.prefix(3).joined(separator: ", "))")
+    check(grew.isEmpty, "实际图标不会超过期望尺寸\(grew.isEmpty ? "" : "：" + grew.prefix(3).joined(separator: ", "))")
+    check(belowFloor.isEmpty, "放得下像样网格时图标不低于设置值的 85%\(belowFloor.isEmpty ? "" : "：" + belowFloor.prefix(3).joined(separator: ", "))")
 
-    // 具体回归：13" 刘海屏 + 图标 74 + 全屏缩放 2.5（用户配置）应完整放下，且图标不明显缩水
-    let regViewport = CGSize(width: 1470, height: 956 - 56 - 32 - 68)
-    let regCfg = GridMetrics.fullscreenConfig(
-        viewport: regViewport,
-        capacity: GridMetrics.capacity(viewport: regViewport, configured: GridCapacity(columns: 8, rows: 5)),
-        preferredIconSize: 74, columnSpacing: 24, rowSpacing: 24, spacingScale: 2.5)
-    check(regCfg.gridPixelHeight <= regViewport.height + 0.01,
-          "13\" 刘海屏全屏：网格高度 \(Int(regCfg.gridPixelHeight)) ≤ 可视区 \(Int(regViewport.height))")
-    check(regCfg.iconSize >= 64,
-          "13\" 刘海屏全屏：图标仍有 \(Int(regCfg.iconSize))pt（靠收紧间距而非一味缩小图标）")
+    // 窗口越矮每页行数只会减少、不会反弹（避免拖动窗口时分页来回抖动）
+    var previousRows = Int.max
+    var rowsRebounded = false
+    for h in stride(from: CGFloat(1000), through: 160, by: -10) {
+        let rows = GridMetrics.resolve(settings: defaults, viewport: CGSize(width: 1200, height: h), mode: .windowed).layout.rows
+        if rows > previousRows { rowsRebounded = true }
+        previousRows = rows
+    }
+    check(!rowsRebounded, "窗口变矮时行数单调不增")
+
+    // MARK: 全屏：「全屏缩放」是真实的放大倍数
+
+    func fullscreenViewport(_ screen: (name: String, width: CGFloat, height: CGFloat, safeTop: CGFloat)) -> CGSize {
+        ChromeMetrics.gridViewport(containerSize: CGSize(width: screen.width, height: screen.height),
+                                   fullscreen: true, safeAreaTop: screen.safeTop, showsPagination: true)
+    }
+
+    let fullHD = fullscreenViewport(referenceScreens[6])
+    let hd = GridMetrics.resolve(settings: defaults, viewport: fullHD, mode: .fullscreen)
+    check(hd.appliedScale == 1.25 && hd.layout.iconSize == 80, "全屏缩放 1.25×：64pt 的图标显示为 80pt")
+    check(hd.layout.columnSpacing == 30 && hd.layout.rowSpacing <= 30 + 0.01,
+          "全屏缩放同样放大间距（24 → 30）")
+    check(hd.layout.columns == 7 && hd.layout.rows == 5, "全屏保持配置的行列数")
+    check(hd.matchesSettings, "屏幕放得下时：全屏实际显示与设置（含缩放）完全一致")
+
+    let noZoom = GridMetrics.resolve(settings: GridSettings(fullscreenScale: 1), viewport: fullHD, mode: .fullscreen)
+    check(noZoom.layout.iconSize == 64 && noZoom.layout.columnSpacing == 24, "全屏缩放 1×：全屏与窗口化尺寸一致")
+
+    // 全屏缩放调大，图标就真的变大（旧算法里调大反而会让图标变小）
+    var lastIcon: CGFloat = 0
+    var scaleMonotonic = true
+    for scale in stride(from: 1.0, through: 3.0, by: 0.25) {
+        var s = defaults
+        s.fullscreenScale = CGFloat(scale)
+        let icon = GridMetrics.resolve(settings: s, viewport: fullHD, mode: .fullscreen).layout.iconSize
+        if icon + 0.01 < lastIcon { scaleMonotonic = false }
+        lastIcon = icon
+    }
+    check(scaleMonotonic, "全屏缩放越大图标越大（单调不减）")
+
+    // 缩放超出屏幕容量：自动降低并如实标注，且不为放大而减少行列
+    let laptop = fullscreenViewport(referenceScreens[5])      // 1280×800
+    var greedy = defaults
+    greedy.fullscreenScale = 2.5
+    let limited = GridMetrics.resolve(settings: greedy, viewport: laptop, mode: .fullscreen)
+    check(limited.appliedScale > 1 && limited.appliedScale < 2.5, "缩放放不下时自动降低到屏幕能容纳的最大倍数")
+    check(limited.layout.columns == 7 && limited.layout.rows == 5, "降低缩放而不是减少每页行列数")
+    check(limited.deviations.contains { if case .scaleLimited = $0 { return true } else { return false } },
+          "如实报告「全屏缩放被限制」")
+    check(limited.layout.gridPixelHeight <= laptop.height * GridMetrics.fullscreenFill.height + 0.01,
+          "降低后的全屏网格不溢出")
+
+    // 连 1× 都放不下（小屏 + 8 行）：回到与窗口化相同的降级流程，行数减少
+    var eightRows = defaults
+    eightRows.rows = 8
+    let cramped = GridMetrics.resolve(settings: eightRows, viewport: laptop, mode: .fullscreen)
+    check(cramped.layout.rows < 8 && cramped.appliedScale == 1, "小屏 8 行：缩放回落到 1×，并减少行数")
+    check(cramped.deviations.contains(.rowsReduced(configured: 8, actual: cramped.layout.rows)),
+          "小屏 8 行：如实报告行数减少")
+
+    // MARK: 不同尺寸屏幕上图标大小的差距（用户问题 1 的量化回归）
+
+    var iconSizes: [(String, CGFloat)] = []
+    for screen in referenceScreens {
+        let result = GridMetrics.resolve(settings: defaults, viewport: fullscreenViewport(screen), mode: .fullscreen)
+        iconSizes.append((screen.name, result.layout.iconSize))
+    }
+    let maxIcon = iconSizes.map { $0.1 }.max() ?? 1
+    let minIcon = iconSizes.map { $0.1 }.min() ?? 1
+    check(maxIcon / minIcon <= 1.2,
+          "默认设置在 8 种常见屏幕上全屏图标差距 ≤ 20%（实际 \(String(format: "%.2f", Double(maxIcon / minIcon)))×，\(Int(minIcon))–\(Int(maxIcon))pt）")
+    check(iconSizes.filter { $0.1 == 80 }.count >= 7, "绝大多数屏幕上全屏图标恰好是设置值 × 缩放（80pt），不再随屏幕尺寸漂移")
+
+    // MARK: 设置页预览与真实布局共用同一份推算
+
+    check(ChromeMetrics.gridViewport(containerSize: CGSize(width: 1020, height: 700), fullscreen: false,
+                                     safeAreaTop: 0, showsPagination: true) == CGSize(width: 1020, height: 552),
+          "窗口化网格区 = 窗口高 − 顶栏 56 − 留白 12 − 分页 68 − 留白 12")
+    check(ChromeMetrics.gridViewport(containerSize: CGSize(width: 1020, height: 700), fullscreen: false,
+                                     safeAreaTop: 0, showsPagination: false) == CGSize(width: 1020, height: 620),
+          "窗口化单页时没有分页条：网格区 = 窗口高 − 80")
+    check(ChromeMetrics.gridViewport(containerSize: CGSize(width: 1470, height: 956), fullscreen: true,
+                                     safeAreaTop: 32, showsPagination: true) == CGSize(width: 1470, height: 800),
+          "全屏刘海屏网格区 = 屏高 − 顶栏 56 − 刘海 32 − 分页 68")
+    check(ChromeMetrics.gridViewport(containerSize: CGSize(width: 100, height: 50), fullscreen: false,
+                                     safeAreaTop: 0, showsPagination: true).height == 0,
+          "容器过小时网格区高度不为负")
 
     // 布局像素计算自洽
     check(GridLayoutConfig.defaults.gridPixelWidth > 0 && GridLayoutConfig.defaults.gridPixelHeight > 0,
           "默认网格尺寸计算为正数")
+}
+
+// MARK: - 空白处点击策略
+
+func testBlankClickPolicy() {
+    print("BlankClickPolicy:")
+
+    func action(full: Bool, settings: Bool = false, folder: Bool = false, selecting: Bool = false) -> BlankClickAction {
+        BlankClickPolicy.action(isFullscreen: full, settingsVisible: settings, folderOpen: folder, selecting: selecting)
+    }
+
+    check(action(full: true) == .hideLauncher, "全屏：点空白处收起启动台")
+    check(action(full: false) == .none, "小窗：点空白处什么都不做（不收起）")
+
+    // 回归：小窗点空白处曾经会把设置面板关掉，看起来像「小屏界面也会关闭」
+    check(action(full: false, settings: true) == .none, "小窗：点空白处不会关闭设置面板")
+    check(action(full: true, settings: true) == .closeSettings, "全屏：先关闭设置面板，再次点击才收起")
+
+    check(action(full: true, folder: true) == .dismissFolder, "全屏：先关闭文件夹")
+    check(action(full: false, folder: true) == .dismissFolder, "小窗：点空白处可以关闭文件夹（窗口内的临时状态）")
+    check(action(full: true, selecting: true) == .exitSelection, "全屏：先退出多选")
+    check(action(full: false, selecting: true) == .exitSelection, "小窗：点空白处可以退出多选")
+
+    check(action(full: true, settings: true, folder: true, selecting: true) == .closeSettings,
+          "全屏逐层退出：设置面板优先")
+    check(action(full: true, folder: true, selecting: true) == .dismissFolder, "全屏逐层退出：文件夹其次")
+    check(action(full: false, settings: true, folder: true) == .dismissFolder, "小窗有设置面板与文件夹：只关文件夹")
 }
 
 // MARK: - 增量扫描
@@ -742,6 +936,7 @@ do {
     testGridPacker()
     testPageComposer()
     testGridMetrics()
+    testBlankClickPolicy()
     try testIncrementalScan()
     try testScanner()
     try testConfigStore()

@@ -236,7 +236,9 @@ public struct AppConfig: Codable, Equatable {
     public var spacing: Double = 24          // 兼容旧配置，新代码使用 columnSpacing/rowSpacing
     public var columnSpacing: Double = 24
     public var rowSpacing: Double = 24
-    public var fullscreenSpacingScale: Double = 1.6  // 全屏时列/行间距放大倍数
+    /// 全屏放大倍数（≥ 1）：全屏时图标与间距相对窗口化的放大倍数，屏幕放不下时自动降低。
+    /// 取代早期只放大间距的 `fullscreenSpacingScale`（旧值被忽略，使用默认值）。
+    public var fullscreenScale: Double = 1.25
     public var iconSize: Double = 64
     // 快捷键（Carbon RegisterEventHotKey：keyCode + 修饰键位；keyCode 为 nil 表示未录制）
     public var hotKeyEnabled: Bool = false
@@ -295,7 +297,7 @@ public struct AppConfig: Codable, Equatable {
         spacing = try c.decodeIfPresent(Double.self, forKey: .spacing) ?? 24
         columnSpacing = try c.decodeIfPresent(Double.self, forKey: .columnSpacing) ?? 24
         rowSpacing = try c.decodeIfPresent(Double.self, forKey: .rowSpacing) ?? 24
-        fullscreenSpacingScale = try c.decodeIfPresent(Double.self, forKey: .fullscreenSpacingScale) ?? 1.6
+        fullscreenScale = try c.decodeIfPresent(Double.self, forKey: .fullscreenScale) ?? 1.25
         iconSize = try c.decodeIfPresent(Double.self, forKey: .iconSize) ?? 64
         hotKeyEnabled = try c.decodeIfPresent(Bool.self, forKey: .hotKeyEnabled) ?? false
         hotKeyKeyCode = try c.decodeIfPresent(Int.self, forKey: .hotKeyKeyCode)
@@ -340,7 +342,7 @@ public struct AppConfig: Codable, Equatable {
         rows = source.rows
         columnSpacing = source.columnSpacing
         rowSpacing = source.rowSpacing
-        fullscreenSpacingScale = source.fullscreenSpacingScale
+        fullscreenScale = source.fullscreenScale
         iconSize = source.iconSize
         hotKeyEnabled = source.hotKeyEnabled
         hotKeyKeyCode = source.hotKeyKeyCode
@@ -389,6 +391,13 @@ public enum ConfigStore {
 
     private static var configURL: URL {
         if let override = configURLOverride { return override }
+        // 开发 / 调试用：`RLAUNCH_CONFIG_PATH=/tmp/x/config.json` 让调试实例使用独立配置，
+        // 不读写真实用户配置（`HOME` 环境变量对 FileManager 的 Application Support 路径无效）。
+        if let path = ProcessInfo.processInfo.environment["RLAUNCH_CONFIG_PATH"], !path.isEmpty {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            return url
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("Rlaunch", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

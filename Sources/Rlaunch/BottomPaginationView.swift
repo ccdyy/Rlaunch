@@ -11,7 +11,15 @@ private final class PageNumberButton: NSControl {
     private var isHovered: Bool = false {
         didSet { if oldValue != isHovered { needsDisplay = true } }
     }
+    /// 拖动条目悬停在这个页码上（松手即放到该页末尾）
+    private var isDropTarget: Bool = false {
+        didSet { if oldValue != isDropTarget { needsDisplay = true } }
+    }
     var onSelect: ((Int) -> Void)?
+    /// 右键：由外部构造菜单并弹出
+    var onContextMenu: ((Int, NSEvent) -> Void)?
+    /// 把拖来的条目放到这一页
+    var onDropItems: (([String]) -> Void)?
 
     private var isDarkMode: Bool {
         effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -23,6 +31,7 @@ private final class PageNumberButton: NSControl {
     init(pageIndex: Int) {
         self.pageIndex = pageIndex
         super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+        registerForDraggedTypes(NSPasteboard.PasteboardType.rlaunchItemDragTypes)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -58,6 +67,38 @@ private final class PageNumberButton: NSControl {
         }
     }
 
+    override func rightMouseDown(with event: NSEvent) {
+        onContextMenu?(pageIndex, event)
+    }
+
+    // MARK: 拖放目标：把条目拖到页码上松手，即放到该页末尾
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !sender.draggingPasteboard.rlaunchDraggedItemIDs.isEmpty else { return [] }
+        isDropTarget = true
+        return .move
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isDropTarget ? .move : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        isDropTarget = false
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        isDropTarget = false
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        isDropTarget = false
+        let ids = sender.draggingPasteboard.rlaunchDraggedItemIDs
+        guard !ids.isEmpty, let handler = onDropItems else { return false }
+        handler(ids)
+        return true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let dark = isDarkMode
@@ -71,7 +112,10 @@ private final class PageNumberButton: NSControl {
         )
         let circlePath = NSBezierPath(ovalIn: circleRect)
 
-        if isCurrent {
+        if isDropTarget {
+            NSColor.controlAccentColor.withAlphaComponent(0.85).setFill()
+            circlePath.fill()
+        } else if isCurrent {
             if dark {
                 NSColor.white.withAlphaComponent(0.28).setFill()
                 circlePath.fill()
@@ -94,7 +138,7 @@ private final class PageNumberButton: NSControl {
         // 绘制居中数字，杜绝任何截断
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: isCurrent ? .bold : .medium)
         let textColor: NSColor
-        if isCurrent {
+        if isDropTarget || isCurrent {
             textColor = .white
         } else if dark {
             textColor = isHovered ? .white : NSColor.white.withAlphaComponent(0.70)
@@ -127,6 +171,19 @@ private final class PageNumberButton: NSControl {
 private final class PaginationArrowButton: NSButton {
     private var isHovered: Bool = false {
         didSet { if oldValue != isHovered { updateAppearance() } }
+    }
+    /// 拖动条目悬停在按钮上（仅「+」按钮接收拖放：松手即放进新建的页面）
+    private var isDropTarget: Bool = false {
+        didSet { if oldValue != isDropTarget { updateAppearance() } }
+    }
+    var onDropItems: (([String]) -> Void)? {
+        didSet {
+            if onDropItems != nil {
+                registerForDraggedTypes(NSPasteboard.PasteboardType.rlaunchItemDragTypes)
+            } else {
+                unregisterDraggedTypes()
+            }
+        }
     }
 
     private var isDarkMode: Bool {
@@ -166,6 +223,10 @@ private final class PaginationArrowButton: NSButton {
         if !isEnabled {
             alphaValue = 0.28
             layer?.backgroundColor = NSColor.clear.cgColor
+        } else if isDropTarget {
+            alphaValue = 1.0
+            contentTintColor = .white
+            layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.85).cgColor
         } else if isHovered {
             alphaValue = 1.0
             layer?.backgroundColor = dark
@@ -191,15 +252,51 @@ private final class PaginationArrowButton: NSButton {
     override func mouseExited(with event: NSEvent) {
         isHovered = false
     }
+
+    // MARK: 拖放目标（仅在设置了 onDropItems 时注册）
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard onDropItems != nil, !sender.draggingPasteboard.rlaunchDraggedItemIDs.isEmpty else { return [] }
+        isDropTarget = true
+        return .move
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isDropTarget ? .move : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        isDropTarget = false
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        isDropTarget = false
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        isDropTarget = false
+        let ids = sender.draggingPasteboard.rlaunchDraggedItemIDs
+        guard !ids.isEmpty, let handler = onDropItems else { return false }
+        handler(ids)
+        return true
+    }
 }
 
-// MARK: - 底部分页条（居中胶囊、明暗自适应液态玻璃、条件显示左右箭头、点击直接切页）
+// MARK: - 底部分页条（居中胶囊、明暗自适应液态玻璃、条件显示左右箭头、点击直接切页、「+」新建页面）
 
 final class BottomPaginationView: NSView {
 
     var onSelectPage: ((Int) -> Void)?
     var onPrevPage: (() -> Void)?
     var onNextPage: (() -> Void)?
+    /// 点击「+」：在末尾新建一个空白页
+    var onAddPage: (() -> Void)?
+    /// 页码右键菜单（参数为页序，返回 nil 则不弹出）
+    var menuForPage: ((Int) -> NSMenu?)?
+    /// 把条目拖到某个页码上松手：放到该页末尾
+    var onDropItemsOnPage: (([String], Int) -> Void)?
+    /// 把条目拖到「+」上松手：放进新建的页面
+    var onDropItemsOnAdd: (([String]) -> Void)?
 
     private(set) var currentPage: Int = 0
     private(set) var totalPages: Int = 1
@@ -210,6 +307,7 @@ final class BottomPaginationView: NSView {
     private let contentHost: NSView
     private let prevButton = PaginationArrowButton(symbolName: "chevron.left", accessibilityLabel: L10n.t("上一页"))
     private let nextButton = PaginationArrowButton(symbolName: "chevron.right", accessibilityLabel: L10n.t("下一页"))
+    private let addButton = PaginationArrowButton(symbolName: "plus", accessibilityLabel: L10n.t("新建页面"))
     private var pageButtons: [PageNumberButton] = []
 
     private var isDarkMode: Bool {
@@ -247,9 +345,14 @@ final class BottomPaginationView: NSView {
         prevButton.action = #selector(prevClicked)
         nextButton.target = self
         nextButton.action = #selector(nextClicked)
+        addButton.target = self
+        addButton.action = #selector(addClicked)
+        addButton.toolTip = L10n.t("新建页面")
+        addButton.onDropItems = { [weak self] ids in self?.onDropItemsOnAdd?(ids) }
 
         contentHost.addSubview(prevButton)
         contentHost.addSubview(nextButton)
+        contentHost.addSubview(addButton)
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange), name: .themeDidChange, object: nil)
@@ -294,6 +397,7 @@ final class BottomPaginationView: NSView {
         }
         prevButton.updateAppearance()
         nextButton.updateAppearance()
+        addButton.updateAppearance()
         pageButtons.forEach { $0.updateAppearance() }
     }
 
@@ -305,6 +409,10 @@ final class BottomPaginationView: NSView {
     @objc private func nextClicked() {
         guard currentPage < totalPages - 1 else { return }
         onNextPage?()
+    }
+
+    @objc private func addClicked() {
+        onAddPage?()
     }
 
     /// 更新当前页与总页数
@@ -343,6 +451,13 @@ final class BottomPaginationView: NSView {
             btn.onSelect = { [weak self] pageIndex in
                 self?.onSelectPage?(pageIndex)
             }
+            btn.onContextMenu = { [weak self, weak btn] pageIndex, event in
+                guard let self, let btn, let menu = self.menuForPage?(pageIndex) else { return }
+                NSMenu.popUpContextMenu(menu, with: event, for: btn)
+            }
+            btn.onDropItems = { [weak self] ids in
+                self?.onDropItemsOnPage?(ids, i)
+            }
             pageButtons.append(btn)
             contentHost.addSubview(btn)
         }
@@ -364,8 +479,10 @@ final class BottomPaginationView: NSView {
         let arrowGap: CGFloat = showArrows ? 5 : 0
         let sidePadding: CGFloat = 10
 
+        // 页码 + 末尾的「+」新建页面按钮
         let numbersW = CGFloat(totalPages) * itemSize + CGFloat(max(0, totalPages - 1)) * gap
-        let totalW = (arrowW + arrowGap) * 2 + numbersW + sidePadding * 2
+        let addW = gap + itemSize
+        let totalW = (arrowW + arrowGap) * 2 + numbersW + addW + sidePadding * 2
         return NSSize(width: max(totalW, 48), height: 36)
     }
 
@@ -392,6 +509,8 @@ final class BottomPaginationView: NSView {
             btn.frame = NSRect(x: x, y: y, width: itemSize, height: itemSize)
             x += itemSize + gap
         }
+        // 末尾紧跟「+」新建页面
+        addButton.frame = NSRect(x: x, y: y, width: itemSize, height: itemSize)
 
         if showArrows {
             x = bounds.width - 10 - itemSize
@@ -404,5 +523,7 @@ final class BottomPaginationView: NSView {
     func applyLanguage() {
         prevButton.setAccessibilityLabel(L10n.t("上一页"))
         nextButton.setAccessibilityLabel(L10n.t("下一页"))
+        addButton.setAccessibilityLabel(L10n.t("新建页面"))
+        addButton.toolTip = L10n.t("新建页面")
     }
 }

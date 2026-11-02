@@ -17,6 +17,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var lastGridLayoutConfig: GridLayoutConfig?
     /// 当前网格实际容量：窗口缩小时会小于 config.columns/rows，分页与布局都必须用它
     private var gridCapacity = GridCapacity(columns: 7, rows: 5)
+    /// 最近一次呈现给用户的各页内容：判断「某个操作腾空了哪些页」的基准（见 `savePagesOrder`）
+    private var displayedPages: [[GridItem]] = []
     /// 容量变化导致的分页重排（合并到下一次 runloop，避免拖动窗口时反复重建视图）
     private var needsRepaginate = false
     private var gridColumns: Int { max(gridCapacity.columns, 1) }
@@ -126,11 +128,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - 根视图
 
-    private static let topBarHeight: CGFloat = 56
+    // 顶栏 / 分页条 / 留白的尺寸统一来自 `ChromeMetrics`：设置页的「当前显示效果」预览与这里共用同一份算式。
+    private static let topBarHeight: CGFloat = ChromeMetrics.topBarHeight
     /// 窗口化时的圆角（与系统窗口观感一致）
     private static let windowCornerRadius: CGFloat = 18
     /// 小屏窗口化时顶栏/底栏与网格滚动区之间的留白
-    private static let windowedChromeContentGap: CGFloat = 12
+    private static let windowedChromeContentGap: CGFloat = ChromeMetrics.windowedContentGap
 
     private struct RootChromeLayout {
         var topBarFrame: NSRect
@@ -168,10 +171,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let topInset = layoutTopInset()
         let gap = windowedGridChromeGap()
         let showPagination = !bottomPaginationView.isHidden
-        let bottomBarH: CGFloat = 36
-        let bottomMargin: CGFloat = 16
-        let bottomBarBlock = showPagination ? (bottomBarH + bottomMargin * 2) : 0
-        let bottomReserved = bottomBarBlock + gap
+        let bottomMargin = ChromeMetrics.paginationMargin
+        let bottomReserved = ChromeMetrics.bottomReserved(fullscreen: isPseudoFullScreen,
+                                                          showsPagination: showPagination)
         let topBarFrame = NSRect(
             x: 0,
             y: bounds.height - Self.topBarHeight - topInset,
@@ -323,6 +325,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         scrollView.onFocusSearch = { [weak self] in self?.focusSearchField() }
         scrollView.onConfirm = { [weak self] in self?.activateFocusedOrFirstResult() }
         scrollView.onMoveFocus = { [weak self] dx, dy in self?.moveFocus(dx: dx, dy: dy) }
+        scrollView.onPaste = { [weak self] in self?.pasteSelectionToCurrentPage() }
 
         emptyStateView.onAction = { [weak self] in self?.rescan() }
 
@@ -413,6 +416,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.scrollView.scrollToPage(self.scrollView.currentPage + 1, animated: true)
         }
+        // 页面管理：「+」新建、页码右键菜单、把条目拖到页码 / 「+」上松手
+        bottomPaginationView.onAddPage = { [weak self] in self?.createPageAtEnd() }
+        bottomPaginationView.menuForPage = { [weak self] index in self?.pageMenu(for: index) }
+        bottomPaginationView.onDropItemsOnPage = { [weak self] ids, pageIndex in
+            self?.handleReorderDrop(itemIds: ids, targetPageIndex: pageIndex, targetIndex: Int.max)
+        }
+        bottomPaginationView.onDropItemsOnAdd = { [weak self] ids in
+            self?.handleDropOnNewPage(itemIds: ids)
+        }
     }
 
     private func wireSelectionTray() {
@@ -420,6 +432,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         selectionTray.onCancelAll = { [weak self] in self?.exitSelectionMode() }
         selectionTray.onPlaceAction = { [weak self] in self?.handleTrayPlaceAction() }
         selectionTray.onCreateFolder = { [weak self] in self?.createFolderFromSelectedApps() }
+        selectionTray.onPlaceNewPage = { [weak self] in self?.placeSelectedToNewPage() }
     }
 
     // MARK: - 扫描
@@ -542,18 +555,43 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         // 关键：窗口缩小后每页格数会变少，历史编排可能超出当前容量；
         // 必须先按当前容量顺延重排，否则超出的条目会被布局判定为「放不下」而静默消失。
-        let capacityPages = PageComposer.trimTrailingEmpty(
-            PageComposer.reflow(pages, from: 0, columns: cols, rows: rows))
+        // 用户新建的空白页（包括末尾的）原样保留，只有「被某个操作腾空」的页才会被回收（见 savePagesOrder）。
+        let capacityPages = PageComposer.reflow(pages, from: 0, columns: cols, rows: rows)
 
         let unvisited = all.filter { !visited.contains($0.identifier) }
         return PageComposer.compose(savedPages: capacityPages, unvisited: unvisited, columns: cols, rows: rows)
     }
 
-    private func savePagesOrder(_ newPages: [[GridItem]]) {
-        guard searchQuery.isEmpty else { return }
-        config.pageOrders = newPages.map { $0.map { $0.identifier } }
+    /// 页面编排保存时，如何处理「被本次操作腾空」的页面。
+    private enum VacatedPages {
+        /// 与最近一次呈现的页面（`displayedPages`）对比，回收被腾空的页（默认；类似 Launchpad 的自动清理）
+        case recycle
+        /// 与给定的操作前快照对比后回收（操作自身改变了页数时使用，保证按页序一一对应）
+        case recycleAgainst([[GridItem]])
+        /// 不回收：新建 / 删除页面这类「页面结构本身」的操作，空白页是用户刻意创建的
+        case keep
+    }
+
+    /// 保存分页编排并返回实际落盘的各页。
+    ///
+    /// 这里负责「回收被腾空的页」：操作前有内容、操作后变空的页面（把某页最后一个应用拖走 / 放进文件夹 /
+    /// 隐藏 / 卸载）会被自动移除；**操作前就是空白的页（用户新建的）永远不会被自动回收**。
+    @discardableResult
+    private func savePagesOrder(_ newPages: [[GridItem]], vacated: VacatedPages = .recycle) -> [[GridItem]] {
+        guard searchQuery.isEmpty else { return newPages }
+        let finalPages: [[GridItem]]
+        switch vacated {
+        case .recycle:
+            finalPages = PageComposer.recycleVacated(before: displayedPages, after: newPages)
+        case .recycleAgainst(let before):
+            finalPages = PageComposer.recycleVacated(before: before, after: newPages)
+        case .keep:
+            finalPages = newPages.isEmpty ? [[]] : newPages
+        }
+        config.pageOrders = finalPages.map { $0.map { $0.identifier } }
         config.itemOrder = config.pageOrders.flatMap { $0 }
         ConfigStore.save(config)
+        return finalPages
     }
 
     /// 解析 pageOrders 中的键：兼容 `app:<path>` / `folder:<id>` 与旧版直接存路径
@@ -572,43 +610,57 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return itemMap["app:\(orderKey)"]
     }
 
-    /// 当前网格**实际可用容量**：窗口可以被手动缩到很小，此时必须同步减少每页的行列数，
-    /// 否则「分页认为放得下、布局却放不下」的条目会被裁掉或压到顶栏下面。
-    /// 全屏时始终使用用户配置的规格。
-    private func gridCapacity(forViewport viewport: NSSize) -> GridCapacity {
-        // 全屏与窗口化一视同仁：容量都以**真实网格可视区**为准。
-        // 笔记本全屏时视口会被顶栏 + 刘海安全区 + 底栏吃掉 150pt 以上，用屏幕尺寸推算会溢出。
-        GridMetrics.capacity(viewport: viewport, configured: GridCapacity(columns: config.columns, rows: config.rows))
+    private var gridMode: GridMode { isPseudoFullScreen ? .fullscreen : .windowed }
+
+    /// 把「设置」按**真实网格可视区**推算成「实际网格」（容量 + 图标 + 间距一次算出）。
+    ///
+    /// - 设置里写多少就显示多少：空间足够时图标、间距、行列数与设置完全一致；
+    /// - 放不下时依次收紧间距 → 图标至多缩到 85% → 减少每页行列数，整页永远落在可视区内；
+    /// - 全屏时「全屏缩放」是真实的放大倍数，屏幕放不下自动降低，不会为放大而减少每页行列数。
+    ///
+    /// 容量与布局来自同一次推算，分页与排布才不会出现「分页认为放得下、布局却放不下」。
+    private func resolveGrid(forViewport viewport: NSSize) -> GridResolution {
+        GridMetrics.resolve(settings: config.gridSettings, viewport: viewport, mode: gridMode)
     }
 
-    /// 按当前可视区域推算网格参数：全屏放大铺满；窗口化在容量范围内尽量使用配置的图标尺寸，
-    /// 放不下时按比例收紧间距与图标，保证整页永远落在可视区内（不会被顶栏/底栏压住）。
-    private func gridConfig(forViewport viewport: NSSize, capacity: GridCapacity) -> GridLayoutConfig {
+    /// 设置页「当前显示效果」所需的窗口 / 屏幕信息。
+    /// 网格可视区用与真实布局相同的 `ChromeMetrics` 推算，预览才与实际一致。
+    func gridPreviewContext() -> GridPreviewContext {
+        let fallbackSize = NSSize(width: config.windowWidth, height: config.windowHeight)
+        let windowSize: NSSize
         if isPseudoFullScreen {
-            return GridMetrics.fullscreenConfig(
-                viewport: viewport,
-                capacity: capacity,
-                preferredIconSize: CGFloat(config.iconSize),
-                columnSpacing: CGFloat(config.columnSpacing),
-                rowSpacing: CGFloat(config.rowSpacing),
-                spacingScale: CGFloat(config.fullscreenSpacingScale)
-            )
+            // 全屏中：窗口化尺寸取「退出全屏后将恢复的大小」
+            windowSize = frameBeforeFullScreen == .zero ? fallbackSize : frameBeforeFullScreen.size
+        } else {
+            windowSize = window?.frame.size ?? fallbackSize
         }
-        return GridMetrics.windowedConfig(
-            viewport: viewport,
-            capacity: capacity,
-            preferredIconSize: CGFloat(config.iconSize),
-            columnSpacing: CGFloat(config.columnSpacing),
-            rowSpacing: CGFloat(config.rowSpacing)
+        let screen = window?.screen ?? NSScreen.main
+        let screenSize = screen?.frame.size ?? .zero
+        let showsPagination = scrollView.pageCount > 1
+        return GridPreviewContext(
+            windowSize: windowSize,
+            windowedViewport: ChromeMetrics.gridViewport(
+                containerSize: windowSize, fullscreen: false, safeAreaTop: 0, showsPagination: showsPagination),
+            screenName: (screen?.localizedName ?? "").trimmingCharacters(in: .whitespaces),
+            screenSize: screenSize,
+            fullscreenViewport: ChromeMetrics.gridViewport(
+                containerSize: screenSize, fullscreen: true,
+                safeAreaTop: screen?.safeAreaInsets.top ?? 0, showsPagination: showsPagination)
         )
     }
 
     // MARK: - 分页与布局
 
     private func reloadData(keepPage: Int? = nil) {
+        // 必须先按「最新设置 + 当前可视区」推算网格容量，再据此分页：
+        // 设置里改了行列数 / 图标大小 / 全屏缩放后，若沿用上一次的旧容量切页，
+        // 每页条目数就与实际能显示的格数对不上（条目被裁掉或多出空位），表现为「设置与实际显示不符」。
+        let cfg = refreshGridMetrics(viewport: scrollView.bounds.size)
         let pageList = currentPagesItems()
         let pageCount = max(pageList.count, 1)
         scrollView.setPageCount(pageCount)
+        // 搜索结果是临时视图，不作为「哪些页被操作腾空」的基准
+        if searchQuery.isEmpty { displayedPages = pageList }
 
         // 焦点条目已不存在（搜索、隐藏、删除等）时清除焦点，避免高亮停留在不存在的条目上
         if let id = focusedIdentifier,
@@ -619,7 +671,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         let ids = selectedIdentifiers
         let isLimitReached = selectedItems.count >= Self.maxSelectionCount
-        let cfg = refreshGridMetrics(viewport: scrollView.bounds.size)
 
         // 复用已有页面视图（页面索引与页号一一对应且只从尾部增删）：
         // 搜索输入、设置变更只需更新内容，避免整页重建导致的卡顿与瞬时闪烁。
@@ -631,9 +682,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             pages.append(page)
             pagesContainer.addSubview(page)
         }
+        // 空白页（用户新建的）显示使用说明；搜索结果与「一个应用都没有」时不显示
+        let hasAnyItem = pageList.contains { !$0.isEmpty }
+        let blankHint: (title: String, detail: String)? = (searchQuery.isEmpty && hasAnyItem)
+            ? (title: L10n.t("空白页面"),
+               detail: L10n.t("长按应用进入多选，翻到这一页后点「放本页」（或按 ⌘V）即可放入；也可以把应用直接拖到下方的页码上。右键本页可删除。"))
+            : nil
         for (pIndex, pItems) in pageList.enumerated() {
             let page = pages[pIndex]
             page.layoutConfig = cfg
+            page.emptyHint = blankHint
             page.items = pItems
             page.runningBundleIDs = runningBundleIDs
             page.isSelectionMode = isSelectionMode
@@ -716,12 +774,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 按当前可视区重新推算「容量 + 网格参数」，并写入缓存供分页使用
     @discardableResult
     private func refreshGridMetrics(viewport: NSSize) -> GridLayoutConfig {
-        let capacity = gridCapacity(forViewport: viewport)
-        let cfg = gridConfig(forViewport: viewport, capacity: capacity)
-        gridCapacity = capacity
-        lastGridLayoutConfig = cfg
+        let resolution = resolveGrid(forViewport: viewport)
+        gridCapacity = resolution.capacity
+        lastGridLayoutConfig = resolution.layout
         lastLayoutSize = viewport
-        return cfg
+        return resolution.layout
     }
 
     /// 容量变化（手动缩放窗口）后需要重新分页：合并到下一次 runloop，避免拖动过程中反复重建
@@ -748,8 +805,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let size = scrollView.bounds.size
         guard size.width > 0, size.height > 0 else { return }
 
-        let capacity = gridCapacity(forViewport: size)
-        let cfg = gridConfig(forViewport: size, capacity: capacity)
+        let resolution = resolveGrid(forViewport: size)
+        let capacity = resolution.capacity
+        let cfg = resolution.layout
         let sizeChanged = size != lastLayoutSize
         let capacityChanged = capacity != gridCapacity
         let cfgChanged = cfg != lastGridLayoutConfig
@@ -770,6 +828,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         // 每页格数变了：分页要跟着重排，否则超出的条目会被布局丢弃
         if capacityChanged { scheduleRepaginate() }
+
+        // 窗口 / 屏幕尺寸变了：设置页的「当前显示效果」要跟着刷新
+        if sizeChanged { settingsController?.gridMetricsDidChange() }
     }
 
     // MARK: - 动作
@@ -922,12 +983,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if let root = window?.contentView {
             root.addSubview(popover, positioned: .below, relativeTo: selectionTray)
         }
+        selectionTray.setNewPageAvailable(false)
         selectionTray.setTargetMode(isFolder: appCount > 0)
     }
 
     private func dismissFolderPopover() {
         guard let popover = folderPopoverView else { return }
         folderPopoverView = nil
+        selectionTray.setNewPageAvailable(true)
         selectionTray.setTargetMode(isFolder: false)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
@@ -964,22 +1027,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         field.currentEditor()?.selectAll(nil)
     }
 
+    /// 点击网格空白处。具体策略见 `BlankClickPolicy`：
+    /// - 全屏：逐层退出（设置面板 → 文件夹 → 多选 → 收起启动台）；
+    /// - 小窗：**不关闭任何东西**（既不收起启动台，也不会把旁边的设置面板关掉），
+    ///   只有文件夹、多选这类窗口内的临时状态仍可点空白退出。
     private func handleBlankClick() {
-        if let s = settingsController?.window, s.isVisible {
-            settingsController?.close()
-            return
-        }
-        if folderPopoverView != nil {
-            dismissFolderPopover()
-            return
-        }
-        if isSelectionMode {
-            exitSelectionMode()
-            return
-        }
-        // 只有全屏模式下点击空白处才收起隐藏；小界面（窗口化模式）时点击空白处不关闭界面
-        if isPseudoFullScreen {
-            hide()
+        let action = BlankClickPolicy.action(
+            isFullscreen: isPseudoFullScreen,
+            settingsVisible: settingsController?.window?.isVisible == true,
+            folderOpen: folderPopoverView != nil,
+            selecting: isSelectionMode)
+        switch action {
+        case .none: break
+        case .closeSettings: settingsController?.close()
+        case .dismissFolder: dismissFolderPopover()
+        case .exitSelection: exitSelectionMode()
+        case .hideLauncher: hide()
         }
     }
 
@@ -1096,7 +1159,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let selectedIds = Set(appPaths.map { "app:\($0)" })
         let pageList = PageComposer.removing(selectedIds, from: currentPagesItems())
         savePagesOrder(pageList)
-        compactEmptyPages()
 
         // 从其他包含这些 App 的文件夹中移出（避免重复）
         for idx in 0..<config.folders.count where config.folders[idx].id != folderID {
@@ -1131,18 +1193,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard searchQuery.isEmpty else { return }
 
         let p = scrollView.currentPage
+        let moving = selectedItems
         let pageList = PageComposer.appending(
-            selectedItems,
+            moving,
             toPage: p,
             in: currentPagesItems(),
             columns: gridColumns,
             rows: gridRows
         )
 
-        savePagesOrder(pageList)
-        compactEmptyPages()
+        // 在文件夹弹窗里选中、关闭弹窗后再放到页面上的应用，要同时从文件夹里移出，避免同一个应用出现两处
+        removeAppsFromAllFolders(moving.compactMap { $0.appPath })
+        let finalPages = savePagesOrder(pageList)
         exitSelectionMode()
-        reloadData(keepPage: p)
+        // 放置时若有页被腾空会被回收，页序可能前移：跳到条目最终所在的页，而不是旧的页序
+        reloadData(keepPage: pageIndex(of: moving, in: finalPages) ?? p)
+    }
+
+    /// 键盘 ⌘V：把多选中转站里的项目「粘贴」到当前页（等同点「放本页」）
+    private func pasteSelectionToCurrentPage() {
+        guard isSelectionMode, !selectedItems.isEmpty else {
+            showToast(L10n.t("先长按应用进入多选，再按 ⌘V 粘贴到当前页"))
+            return
+        }
+        handleTrayPlaceAction()
     }
 
     /// 拖动重排序放置：无论文件夹还是应用，均严格按照选中的先后顺序插入到目标页的指定位置
@@ -1150,13 +1224,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard searchQuery.isEmpty else { return }
 
         // 待排序条目：无论文件夹还是应用，顺序均严格按照选中的先后顺序
-        let movingItems: [GridItem]
-        if isSelectionMode && !selectedItems.isEmpty {
-            movingItems = selectedItems
-        } else {
-            let itemMap = allAvailableItemsMap()
-            movingItems = itemIds.compactMap { itemMap[$0] }
-        }
+        let movingItems = draggedItems(for: itemIds)
         guard !movingItems.isEmpty else { return }
 
         let p = max(0, targetPageIndex)
@@ -1170,16 +1238,156 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
 
         // 如果包含从文件夹内拖出来的应用，从该文件夹内剔除
-        for path in movingItems.compactMap({ $0.appPath }) {
-            for fi in 0..<config.folders.count {
-                config.folders[fi].appPaths.removeAll { $0 == path }
-            }
-        }
+        removeAppsFromAllFolders(movingItems.compactMap { $0.appPath })
 
-        savePagesOrder(pageList)
-        compactEmptyPages()
+        let finalPages = savePagesOrder(pageList)
         exitSelectionMode()
-        reloadData(keepPage: min(p, max(pageList.count - 1, 0)))
+        reloadData(keepPage: pageIndex(of: movingItems, in: finalPages) ?? min(p, max(finalPages.count - 1, 0)))
+    }
+
+    /// 拖拽 / 放置时要移动的条目：多选中转站里有内容时以中转站为准（严格保持选中的先后顺序），否则按拖拽载荷解析
+    private func draggedItems(for itemIds: [String]) -> [GridItem] {
+        if isSelectionMode && !selectedItems.isEmpty { return selectedItems }
+        let itemMap = allAvailableItemsMap()
+        return itemIds.compactMap { itemMap[$0] }
+    }
+
+    /// 把应用从所有文件夹里移出（不保存；由随后的 `savePagesOrder` 一并落盘）
+    private func removeAppsFromAllFolders(_ paths: [String]) {
+        guard !paths.isEmpty else { return }
+        let pathSet = Set(paths)
+        for fi in 0..<config.folders.count {
+            config.folders[fi].appPaths.removeAll { pathSet.contains($0) }
+        }
+    }
+
+    /// 条目（第一个）最终所在的页序
+    private func pageIndex(of items: [GridItem], in pages: [[GridItem]]) -> Int? {
+        guard let first = items.first else { return nil }
+        return pages.firstIndex { page in page.contains { $0.identifier == first.identifier } }
+    }
+
+    // MARK: - 页面管理（新建 / 删除 / 放到新页）
+
+    /// 搜索中看到的是临时结果，不能增删页面
+    private func ensureCanManagePages() -> Bool {
+        guard searchQuery.isEmpty else {
+            showToast(L10n.t("请先清除搜索，再管理页面"))
+            return false
+        }
+        return true
+    }
+
+    /// 底部「+」：在末尾新建一个空白页；末尾本来就是空白页时直接跳过去，不重复堆叠
+    private func createPageAtEnd() {
+        guard ensureCanManagePages() else { return }
+        let base = currentPagesItems()
+        if base.last?.isEmpty == true {
+            scrollView.scrollToPage(base.count - 1, animated: true)
+            showToast(L10n.t("最后一页已经是空白页"))
+            return
+        }
+        insertBlankPage(after: base.count - 1, in: base)
+    }
+
+    /// 页码 / 空白处右键菜单：在第 `index` 页之后新建空白页
+    private func createPage(after index: Int) {
+        guard ensureCanManagePages() else { return }
+        insertBlankPage(after: index, in: currentPagesItems())
+    }
+
+    private func insertBlankPage(after index: Int, in base: [[GridItem]]) {
+        let pages = PageComposer.insertingBlankPage(after: index, in: base)
+        // 页面结构本身的操作：新建的空白页是用户刻意创建的，不能被「回收被腾空的页」清掉
+        savePagesOrder(pages, vacated: .keep)
+        let newIndex = min(max(index + 1, 0), pages.count - 1)
+        reloadData(keepPage: scrollView.currentPage)
+        scrollView.scrollToPage(newIndex, animated: true)
+        showToast(L10n.f("已新建第 %d 页", newIndex + 1))
+    }
+
+    /// 删除第 `index` 页：空白页直接删；有内容的需确认，内容并入相邻页（放不下依次顺延），不会丢失任何应用
+    private func requestDeletePage(_ index: Int) {
+        guard ensureCanManagePages() else { return }
+        let base = currentPagesItems()
+        guard base.count > 1 else {
+            showToast(L10n.t("至少要保留一页"))
+            return
+        }
+        guard base.indices.contains(index) else { return }
+
+        let page = base[index]
+        let merged = PageComposer.deletingPage(index, in: base, columns: gridColumns, rows: gridRows)
+        if page.isEmpty {
+            applyDeletePage(index, result: merged)
+            return
+        }
+        // 其余页面都排满了：这一页的项目无处可去，删除不会让页数减少——如实告知，而不是悄悄「删了个寂寞」
+        guard merged.count < base.count else {
+            showToast(L10n.t("其他页面已排满，这一页的项目无处可放。请先把它们移到别的页或文件夹"))
+            return
+        }
+        let message = index > 0
+            ? L10n.f("页内的 %d 个项目不会被删除，会并入上一页，放不下的依次顺延到后面的页面。", page.count)
+            : L10n.f("页内的 %d 个项目不会被删除，会并入下一页，放不下的依次顺延到后面的页面。", page.count)
+        presentPrompt(
+            title: L10n.f("删除第 %d 页", index + 1),
+            message: message,
+            confirmTitle: L10n.t("删除页面"),
+            showsTextField: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            // 确认期间页面可能已经变化（例如后台扫描）：以最新状态重新计算
+            let latest = self.currentPagesItems()
+            guard latest.count > 1, latest.indices.contains(index) else { return }
+            let result = PageComposer.deletingPage(index, in: latest, columns: self.gridColumns, rows: self.gridRows)
+            self.applyDeletePage(index, result: result)
+        }
+    }
+
+    private func applyDeletePage(_ index: Int, result: [[GridItem]]) {
+        savePagesOrder(result, vacated: .keep)
+        // 删除后停在被删页的前一页（第一页被删则停在新的第一页）
+        reloadData(keepPage: min(max(index - 1, 0), max(result.count - 1, 0)))
+        showToast(L10n.f("已删除第 %d 页", index + 1))
+    }
+
+    /// 托盘「放新页」：在当前页之后新建一个空白页，并把选中的项目放进去
+    private func placeSelectedToNewPage() {
+        // 文件夹弹窗打开时，「放」的目标是这个文件夹（托盘里也已隐藏「放新页」）
+        guard folderPopoverView == nil, isSelectionMode, !selectedItems.isEmpty, ensureCanManagePages() else { return }
+        placeItemsOnNewPage(selectedItems, afterPage: scrollView.currentPage)
+    }
+
+    /// 把条目拖到底部「+」上松手：放进新建的页面（紧跟在最后一页之后）。
+    /// 末尾本来就是空白页时直接放进去，不再叠一个新的空白页（与点「+」的行为一致）。
+    private func handleDropOnNewPage(itemIds: [String]) {
+        guard ensureCanManagePages() else { return }
+        let moving = draggedItems(for: itemIds)
+        guard !moving.isEmpty else { return }
+        let base = currentPagesItems()
+        if base.last?.isEmpty == true {
+            handleReorderDrop(itemIds: itemIds, targetPageIndex: base.count - 1, targetIndex: 0)
+            return
+        }
+        placeItemsOnNewPage(moving, afterPage: base.count - 1)
+    }
+
+    private func placeItemsOnNewPage(_ items: [GridItem], afterPage: Int) {
+        guard !items.isEmpty else { return }
+        let base = currentPagesItems()
+        let withNewPage = PageComposer.insertingBlankPage(after: afterPage, in: base)
+        let newIndex = min(max(afterPage + 1, 0), withNewPage.count - 1)
+        let moved = PageComposer.move(items, toPage: newIndex, at: 0, in: withNewPage,
+                                      columns: gridColumns, rows: gridRows)
+
+        removeAppsFromAllFolders(items.compactMap { $0.appPath })
+        // 以「已插入空白页」的页面为基准回收：新页本来就是空的，不会被误回收；被腾空的原页则会被清掉
+        let finalPages = savePagesOrder(moved, vacated: .recycleAgainst(withNewPage))
+        exitSelectionMode()
+        let landed = pageIndex(of: items, in: finalPages) ?? min(newIndex, max(finalPages.count - 1, 0))
+        reloadData(keepPage: landed)
+        showToast(L10n.f("已放入新建的第 %d 页", landed + 1))
     }
 
     private func allAvailableItemsMap() -> [String: GridItem] {
@@ -1225,7 +1433,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 将新文件夹正式纳入配置并持久化
         config.folders.append(newFolder)
         savePagesOrder(pageList)
-        compactEmptyPages()
         exitSelectionMode()
         reloadData(keepPage: p)
     }
@@ -1251,7 +1458,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let appIds = Set(validPaths.map { "app:\($0)" })
         let pageList = PageComposer.removing(appIds, from: currentPagesItems())
         savePagesOrder(pageList)
-        compactEmptyPages()
         ConfigStore.save(config)
 
         // 同步从中转站移除已放入的 App
@@ -1286,7 +1492,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
 
         savePagesOrder(pageList)
-        compactEmptyPages()
         ConfigStore.save(config)
         reloadData(keepPage: scrollView.currentPage)
 
@@ -1323,7 +1528,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
 
         savePagesOrder(pageList)
-        compactEmptyPages()
         reloadData(keepPage: max(startPage, 0))
     }
 
@@ -1455,14 +1659,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         prompt.dismiss()
     }
 
-    /// 回收清空的页面（至少保留首页）
-    private func compactEmptyPages() {
-        guard config.pageOrders.count > 1 else { return }
-        config.pageOrders = PageComposer.compact(config.pageOrders)
-        config.itemOrder = config.pageOrders.flatMap { $0 }
-        ConfigStore.save(config)
-    }
-
     // MARK: - 右键菜单
 
     private final class MenuPayload {
@@ -1563,6 +1759,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         } else {
             let new = NSMenuItem(title: L10n.t("新建文件夹"), action: #selector(menuNewFolder(_:)), keyEquivalent: "")
             menu.addItem(new)
+            menu.addItem(.separator())
+            appendPageItems(to: menu, page: scrollView.currentPage)
+            menu.addItem(.separator())
             let rescan = NSMenuItem(title: L10n.t("重新扫描应用"), action: #selector(menuRescan(_:)), keyEquivalent: "")
             menu.addItem(rescan)
         }
@@ -1570,8 +1769,39 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return menu.items.isEmpty ? nil : menu
     }
 
+    /// 「新建页面 / 删除此页」菜单项（空白处右键菜单与页码右键菜单共用）
+    private func appendPageItems(to menu: NSMenu, page: Int) {
+        let add = NSMenuItem(title: L10n.t("在此页之后新建页面"), action: #selector(menuNewPageAfter(_:)), keyEquivalent: "")
+        add.representedObject = page
+        menu.addItem(add)
+
+        let delete = NSMenuItem(title: L10n.t("删除此页…"), action: #selector(menuDeletePage(_:)), keyEquivalent: "")
+        delete.representedObject = page
+        if scrollView.pageCount <= 1 {
+            delete.isEnabled = false
+            delete.toolTip = L10n.t("至少要保留一页")
+        }
+        menu.addItem(delete)
+    }
+
+    /// 底部页码上的右键菜单
+    private func pageMenu(for index: Int) -> NSMenu? {
+        let menu = NSMenu()
+        appendPageItems(to: menu, page: index)
+        menu.items.forEach { $0.target = self }
+        return menu
+    }
+
     @objc private func menuNewFolder(_ sender: Any?) { createFolder() }
     @objc private func menuRescan(_ sender: Any?) { rescan() }
+    @objc private func menuNewPageAfter(_ sender: NSMenuItem) {
+        guard let page = sender.representedObject as? Int else { return }
+        createPage(after: page)
+    }
+    @objc private func menuDeletePage(_ sender: NSMenuItem) {
+        guard let page = sender.representedObject as? Int else { return }
+        requestDeletePage(page)
+    }
 
     @objc private func menuRevealInFinder(_ sender: NSMenuItem) {
         guard let path = sender.representedObject as? String else { return }
@@ -1598,7 +1828,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let pageList = PageComposer.removing(["app:\(path)"], from: currentPagesItems())
         savePagesOrder(pageList)
-        compactEmptyPages()
         ConfigStore.save(config)
         exitSelectionMode()
         reloadData(keepPage: scrollView.currentPage)
@@ -1654,7 +1883,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let pageList = PageComposer.removing(["app:\(app.path)"], from: currentPagesItems())
         savePagesOrder(pageList)
-        compactEmptyPages()
         ConfigStore.save(config)
 
         selectedItems.removeAll { $0.identifier == "app:\(app.path)" }
@@ -1705,6 +1933,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if settingsController == nil {
             let controller = SettingsWindowController()
             controller.onRescan = { [weak self] in self?.rescan() }
+            // 「网格」页的「当前显示效果」：由主窗口提供窗口 / 屏幕信息，用与真实布局相同的算式推算
+            controller.gridPreviewProvider = { [weak self] in self?.gridPreviewContext() }
             settingsController = controller
         }
         settingsController?.show(relativeTo: window)
@@ -1942,6 +2172,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func applyLanguage() {
         topBar.applyLanguage()
         bottomPaginationView.applyLanguage()
+        selectionTray.applyLanguage()
         if emptyStateView.superview != nil {
             reloadData(keepPage: scrollView.currentPage)
         }
@@ -2043,6 +2274,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 只有全屏伪全屏模式下，切换到其他应用时才自动收起隐藏；小屏模式下点击桌面空白或切换应用绝不关闭界面
         guard isPseudoFullScreen else { return }
         hide()
+    }
+
+    /// 设置面板与主窗口并排使用：点回主窗口（它成为 key 并被提到前面）后，
+    /// 把设置面板重新提到主窗口之上。否则设置面板会被刚点击的主窗口盖住，看起来像「设置被关掉了」。
+    func windowDidBecomeKey(_ notification: Notification) {
+        if let settingsWindow = settingsController?.window, settingsWindow.isVisible {
+            settingsWindow.orderFront(nil)
+        }
     }
 
     func windowDidResignKey(_ notification: Notification) {

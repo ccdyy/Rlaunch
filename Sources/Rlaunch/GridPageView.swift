@@ -46,13 +46,22 @@ final class GridPageView: NSView {
     var onReorderDrop: (([String], Int) -> Void)?
     var getSelectedItemsForDrag: (() -> [GridItem])?
 
+    /// 整页没有任何条目（用户新建的空白页）时显示的提示；nil 表示不显示
+    var emptyHint: (title: String, detail: String)? {
+        didSet { syncEmptyHint() }
+    }
+
     private var cellViews: [AppItemView] = []
     private let insertionIndicator = NSView()
+    private let emptyHintView = EmptyPageHintView()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         clipsToBounds = true
-        registerForDraggedTypes([.rlaunchReorderItems, .rlaunchAppPath, .rlaunchFolderID])
+        registerForDraggedTypes(NSPasteboard.PasteboardType.rlaunchItemDragTypes)
+
+        emptyHintView.isHidden = true
+        addSubview(emptyHintView)
 
         insertionIndicator.wantsLayer = true
         insertionIndicator.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
@@ -123,7 +132,17 @@ final class GridPageView: NSView {
             cellViews[i].isFocused = (item.identifier == focusedIdentifier)
         }
         addSubview(insertionIndicator, positioned: .above, relativeTo: nil)
+        syncEmptyHint()
         needsLayout = true
+    }
+
+    private func syncEmptyHint() {
+        if items.isEmpty, let hint = emptyHint {
+            emptyHintView.update(title: hint.title, detail: hint.detail)
+            emptyHintView.isHidden = false
+        } else {
+            emptyHintView.isHidden = true
+        }
     }
 
     private func isItemRunning(_ item: GridItem) -> Bool {
@@ -157,6 +176,7 @@ final class GridPageView: NSView {
         super.layout()
         let W = bounds.width, H = bounds.height
         guard W > 0, H > 0 else { return }
+        emptyHintView.frame = bounds
 
         let cfg = layoutConfig
         let cols = max(cfg.columns, 1)
@@ -300,19 +320,7 @@ final class GridPageView: NSView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         insertionIndicator.isHidden = true
-        let pb = sender.draggingPasteboard
-
-        var itemIds: [String] = []
-        if let jsonStr = pb.string(forType: .rlaunchReorderItems),
-           let data = jsonStr.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode([String].self, from: data) {
-            itemIds = decoded
-        } else if let path = pb.string(forType: .rlaunchAppPath) {
-            itemIds = ["app:\(path)"]
-        } else if let folderId = pb.string(forType: .rlaunchFolderID) {
-            itemIds = ["folder:\(folderId)"]
-        }
-
+        let itemIds = sender.draggingPasteboard.rlaunchDraggedItemIDs
         guard !itemIds.isEmpty else { return false }
 
         let p = convert(sender.draggingLocation, from: nil)
@@ -320,5 +328,69 @@ final class GridPageView: NSView {
 
         onReorderDrop?(itemIds, dropIndex)
         return true
+    }
+}
+
+// MARK: - 空白页提示
+
+/// 空白页中央的提示：说明这一页是空的、怎么把应用放进来。
+/// 不拦截鼠标（`hitTest` 返回 nil）：点击它等同于点击页面空白处，拖放也直接落到页面上。
+private final class EmptyPageHintView: NSView {
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(wrappingLabelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.contentTintColor = .tertiaryLabelColor
+        iconView.image = NSImage(systemSymbolName: "rectangle.dashed", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 44, weight: .ultraLight))
+        addSubview(iconView)
+
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.alignment = .center
+        addSubview(titleLabel)
+
+        detailLabel.font = .systemFont(ofSize: 12)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.alignment = .center
+        detailLabel.isSelectable = false
+        addSubview(detailLabel)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func update(title: String, detail: String) {
+        titleLabel.stringValue = title
+        detailLabel.stringValue = detail
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let b = bounds
+        guard b.width > 0, b.height > 0 else { return }
+
+        let contentWidth = min(380, max(b.width - 48, 120))
+        let detailHeight = ceil((detailLabel.stringValue as NSString).boundingRect(
+            with: NSSize(width: contentWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: detailLabel.font ?? NSFont.systemFont(ofSize: 12)]).height)
+        let iconSide: CGFloat = 56
+        let titleHeight: CGFloat = 22
+        let spacing: CGFloat = 10
+        let total = iconSide + spacing + titleHeight + spacing + detailHeight
+
+        var y = (b.height + total) / 2 - iconSide
+        iconView.frame = NSRect(x: (b.width - iconSide) / 2, y: y, width: iconSide, height: iconSide)
+        y -= spacing + titleHeight
+        titleLabel.frame = NSRect(x: (b.width - contentWidth) / 2, y: y, width: contentWidth, height: titleHeight)
+        y -= spacing + detailHeight
+        detailLabel.frame = NSRect(x: (b.width - contentWidth) / 2, y: y, width: contentWidth, height: detailHeight)
     }
 }
